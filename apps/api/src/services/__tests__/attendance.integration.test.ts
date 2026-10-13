@@ -1,0 +1,75 @@
+import mongoose from 'mongoose';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { AttendanceCorrectionModel, AttendanceRecordModel, AttendanceSessionModel, AuditLogModel, BatchModel, ClassModel, connectDatabase, disconnectDatabase, TenantModel, UserModel } from '@edtech/database';
+import { tenantContextStorage } from '@edtech/utils';
+import { AttendanceService } from '../attendance.service';
+const suite = process.env.RUN_MONGO_INTEGRATION === '1' ? describe : describe.skip;
+suite('Phase 12 attendance transaction and concurrency integration', () => {
+  const tenantId = new mongoose.Types.ObjectId(), tenantB = new mongoose.Types.ObjectId(), adminId = new mongoose.Types.ObjectId(), instructorId = new mongoose.Types.ObjectId(), otherInstructorId = new mongoose.Types.ObjectId();
+  const students = [new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId(), new mongoose.Types.ObjectId()]; let batchId: mongoose.Types.ObjectId, classId: mongoose.Types.ObjectId;
+  const admin = { userId: adminId.toString(), roles: ['TENANT_ADMIN'] }; const instructor = { userId: instructorId.toString(), roles: ['INSTRUCTOR'] };
+  const run = <T>(fn: () => Promise<T>) => tenantContextStorage.run({ currentTenantId: tenantId.toString(), currentUserId: adminId.toString(), isPlatformContext: false, allowedTenantIds: [tenantId.toString()] }, fn);
+  beforeAll(async () => {
+    await connectDatabase(process.env.MONGO_INTEGRATION_URI || 'mongodb://127.0.0.1:27017/edtech_lms_test?replicaSet=rs0&directConnection=true');
+    for (const m of [AttendanceCorrectionModel, AttendanceRecordModel, AttendanceSessionModel, AuditLogModel, ClassModel, BatchModel, UserModel, TenantModel]) await m.collection.deleteMany({});
+    await Promise.all([AttendanceSessionModel.syncIndexes(), AttendanceRecordModel.syncIndexes(), AttendanceCorrectionModel.syncIndexes()]);
+    await TenantModel.collection.insertMany([{ _id: tenantId, name: 'Attendance A', slug: 'attendance-a' }, { _id: tenantB, name: 'Attendance B', slug: 'attendance-b' }]);
+    await UserModel.collection.insertMany([adminId, instructorId, otherInstructorId, ...students].map((id, i) => ({ _id: id, tenantId, allowedTenantIds: [tenantId], name: `User ${i}`, email: `attendance-${i}@test.local`, passwordHash: 'x', status: 'ACTIVE', emailVerified: true, isSuperAdmin: false, roles: [], createdAt: new Date(), updatedAt: new Date() })));
+    batchId = new mongoose.Types.ObjectId(); classId = new mongoose.Types.ObjectId(); const date = new Date('2026-09-10T09:00:00Z');
+    await BatchModel.collection.insertOne({ _id: batchId, tenantId, name: 'Batch A', batchCode: 'ATT-A', instructorId, mode: 'OFFLINE', status: 'ONGOING', startDate: new Date('2026-09-01'), timing: { startTime: '09:00', endTime: '10:00', timezone: 'Asia/Kolkata' }, daysOfWeek: ['THURSDAY'], maxSeats: 30, enrolledCount: 3, showOnWebsite: false, createdAt: new Date(), updatedAt: new Date() });
+    await ClassModel.collection.insertOne({ _id: classId, tenantId, name: 'SEO Class', classCode: 'ATT-CLS-1', batchId, instructorId, mode: 'OFFLINE', capacity: 10, enrolledCount: 3, enrolledStudents: [{ studentId: students[0], studentName: 'S1', studentEmail: 's1@test.local', enrolledAt: new Date('2026-09-01'), status: 'ENROLLED' }, { studentId: students[1], studentName: 'S2', studentEmail: 's2@test.local', enrolledAt: new Date('2026-09-02'), status: 'ENROLLED' }, { studentId: students[2], studentName: 'Late Joiner', studentEmail: 's3@test.local', enrolledAt: new Date('2026-09-20'), status: 'ENROLLED' }], status: 'ACTIVE', startDate: date, timing: { startTime: '09:00', endTime: '10:00', timezone: 'Asia/Kolkata' }, daysOfWeek: ['THURSDAY'], showOnWebsite: false, classroomDetails: { branch: 'South' }, createdAt: new Date(), updatedAt: new Date() });
+  });
+  afterAll(async () => disconnectDatabase());
+  it('keeps concurrent open idempotent and snapshots only historically eligible students', async () => { const results = await run(() => Promise.all(Array.from({ length: 10 }, () => AttendanceService.open(classId.toString(), instructor)))); expect(results).toHaveLength(10); expect(await AttendanceSessionModel.collection.countDocuments({ classId })).toBe(1); expect(await AttendanceRecordModel.collection.countDocuments({ classId })).toBe(2); expect(results[0].counts.expected).toBe(2); });
+  it('rejects invalid bulk atomically, supports drafts, and requires complete marking', async () => { const session: any = await AttendanceSessionModel.collection.findOne({ classId }); await expect(run(() => AttendanceService.bulkMark(session._id.toString(), { records: [{ studentId: students[0].toString(), status: 'PRESENT' }, { studentId: students[2].toString(), status: 'ABSENT' }] }, instructor))).rejects.toThrow('roster'); expect(await AttendanceRecordModel.collection.countDocuments({ classId, status: { $exists: true } })).toBe(0); await run(() => AttendanceService.bulkMark(session._id.toString(), { records: [{ studentId: students[0].toString(), status: 'LATE', lateMinutes: 5 }] }, instructor)); await expect(run(() => AttendanceService.finalize(session._id.toString(), instructor))).rejects.toThrow('unmarked'); await run(() => AttendanceService.markAllPresent(session._id.toString(), instructor)); });
+  it('finalizes, rejects ordinary edits, and records idempotent correction history', async () => { const session: any = await AttendanceSessionModel.collection.findOne({ classId }); await run(() => AttendanceService.finalize(session._id.toString(), instructor)); await expect(run(() => AttendanceService.bulkMark(session._id.toString(), { records: [{ studentId: students[0].toString(), status: 'ABSENT' }] }, instructor))).rejects.toThrow('Finalized'); const record: any = await AttendanceRecordModel.collection.findOne({ classId, studentId: students[0] }); await run(() => AttendanceService.correct(record._id.toString(), { status: 'PRESENT', reason: 'Verified classroom log', idempotencyKey: 'correction-001' }, admin)); await run(() => AttendanceService.correct(record._id.toString(), { status: 'PRESENT', reason: 'Verified classroom log', idempotencyKey: 'correction-001' }, admin)); expect(await AttendanceCorrectionModel.collection.countDocuments({ attendanceRecordId: record._id })).toBe(1); expect((await AttendanceRecordModel.collection.findOne({ _id: record._id }))?.correctionCount).toBe(1); });
+  it('enforces instructor assignment, tenant isolation, cancellation, and reschedule identity', async () => { await expect(run(() => AttendanceService.getByClass(classId.toString(), { userId: otherInstructorId.toString(), roles: ['INSTRUCTOR'] }))).rejects.toThrow('not assigned'); const original: any = await AttendanceSessionModel.collection.findOne({ classId }); await ClassModel.collection.updateOne({ _id: classId }, { $set: { startDate: new Date('2026-10-01') } }); expect((await run(() => AttendanceService.open(classId.toString(), instructor))).session.id).toBe(original._id.toString()); await ClassModel.collection.updateOne({ _id: classId }, { $set: { status: 'CANCELLED' } }); const summary = await run(() => AttendanceService.studentSummary(students[0].toString())); expect(summary.totalFinalizedEligibleSessions).toBe(0); const foreignClass = new mongoose.Types.ObjectId(); await ClassModel.collection.insertOne({ _id: foreignClass, tenantId: tenantB, name: 'Foreign', classCode: 'FOREIGN', mode: 'ONLINE', capacity: 1, enrolledCount: 0, enrolledStudents: [], status: 'ACTIVE', startDate: new Date(), timing: { startTime: '1', endTime: '2', timezone: 'UTC' }, daysOfWeek: [], showOnWebsite: false }); await expect(run(() => AttendanceService.open(foreignClass.toString(), admin))).rejects.toThrow('not found'); });
+  it('calculates official percentage and batch analytics deterministically', async () => { await ClassModel.collection.updateOne({ _id: classId }, { $set: { status: 'ACTIVE' } }); const summary = await run(() => AttendanceService.studentSummary(students[0].toString())); expect(summary.present).toBe(1); expect(summary.attendancePercentage).toBe(100); const analytics = await run(() => AttendanceService.batchAnalytics(batchId.toString(), { threshold: 75 }, admin)); expect(analytics.finalizedSessions).toBe(1); expect(analytics.totals.present).toBe(2); expect(analytics.students).toHaveLength(0); });
+  it('serializes the final mark versus finalize race without losing or duplicating records', async () => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const raceClassId = new mongoose.Types.ObjectId();
+      await ClassModel.collection.insertOne({ _id: raceClassId, tenantId, name: `Race ${attempt}`, classCode: `ATT-RACE-${attempt}`, batchId, mode: 'OFFLINE', capacity: 1, enrolledCount: 1, enrolledStudents: [{ studentId: students[0], studentName: 'Race Student', studentEmail: 'race@test.local', enrolledAt: new Date('2026-09-01'), status: 'ENROLLED' }], status: 'ACTIVE', startDate: new Date(`2026-10-${String(attempt + 1).padStart(2, '0')}T09:00:00Z`), timing: { startTime: '09:00', endTime: '10:00', timezone: 'Asia/Kolkata' }, daysOfWeek: ['THURSDAY'], showOnWebsite: false, createdAt: new Date(), updatedAt: new Date() });
+      const opened = await run(() => AttendanceService.open(raceClassId.toString(), admin));
+      const [markResult] = await Promise.allSettled([
+        run(() => AttendanceService.bulkMark(opened.session.id, { records: [{ studentId: students[0].toString(), status: 'PRESENT' }] }, admin)),
+        run(() => AttendanceService.finalize(opened.session.id, admin))
+      ]);
+      expect(markResult.status).toBe('fulfilled');
+      const persisted: any = await AttendanceSessionModel.collection.findOne({ _id: new mongoose.Types.ObjectId(opened.session.id) });
+      const records = await AttendanceRecordModel.collection.find({ attendanceSessionId: persisted._id }).toArray();
+      expect(records).toHaveLength(1); expect(records[0].status).toBe('PRESENT'); expect(persisted.markedStudentCount).toBe(1);
+      if (persisted.status === 'OPEN') await run(() => AttendanceService.finalize(opened.session.id, admin));
+      const final: any = await AttendanceSessionModel.collection.findOne({ _id: persisted._id });
+      expect(final.status).toBe('FINALIZED'); expect(final.markedStudentCount).toBe(final.expectedStudentCount);
+    }
+  });
+  it('proves the canonical multi-session matrix, exclusions, and correction analytics consistency', async () => {
+    const matrixStudent = new mongoose.Types.ObjectId(), excusedStudent = new mongoose.Types.ObjectId(), correctionStudent = new mongoose.Types.ObjectId(), lateJoiner = new mongoose.Types.ObjectId();
+    await UserModel.collection.insertMany([matrixStudent, excusedStudent, correctionStudent, lateJoiner].map((id, index) => ({ _id: id, tenantId, allowedTenantIds: [tenantId], name: `Matrix ${index}`, email: `matrix-${index}@test.local`, passwordHash: 'x', status: 'ACTIVE', emailVerified: true, isSuperAdmin: false, roles: [], createdAt: new Date(), updatedAt: new Date() })));
+    const add = async (suffix: string, studentId: mongoose.Types.ObjectId, attendanceStatus: string, sessionStatus = 'FINALIZED', classStatus = 'ACTIVE') => {
+      const cid = new mongoose.Types.ObjectId(), sid = new mongoose.Types.ObjectId(), rid = new mongoose.Types.ObjectId();
+      await ClassModel.collection.insertOne({ _id: cid, tenantId, name: `Matrix ${suffix}`, classCode: `ATT-MATRIX-${suffix}`, batchId, mode: 'OFFLINE', capacity: 5, enrolledCount: 1, enrolledStudents: [{ studentId, studentName: suffix, studentEmail: `${suffix}@test.local`, enrolledAt: new Date('2026-07-01'), status: 'ENROLLED' }], status: classStatus, startDate: new Date('2026-08-01'), timing: { startTime: '09:00', endTime: '10:00', timezone: 'UTC' }, daysOfWeek: [], showOnWebsite: false, createdAt: new Date(), updatedAt: new Date() });
+      await AttendanceSessionModel.collection.insertOne({ _id: sid, tenantId, classId: cid, batchId, status: sessionStatus, sessionDate: new Date('2026-08-01'), scheduledSnapshot: { name: suffix, mode: 'OFFLINE', startDate: new Date('2026-08-01'), startTime: '09:00', endTime: '10:00', timezone: 'UTC' }, openedBy: adminId, expectedStudentCount: 1, markedStudentCount: 1, ...(sessionStatus === 'FINALIZED' ? { finalizedAt: new Date(), finalizedBy: adminId } : {}), createdAt: new Date(), updatedAt: new Date() });
+      await AttendanceRecordModel.collection.insertOne({ _id: rid, tenantId, attendanceSessionId: sid, classId: cid, batchId, studentId, status: attendanceStatus, source: 'MANUAL', markedAt: new Date(), markedBy: adminId, correctionCount: 0, createdAt: new Date(), updatedAt: new Date() });
+      return { cid, sid, rid };
+    };
+    await add('present', matrixStudent, 'PRESENT'); await add('late', matrixStudent, 'LATE'); await add('absent', matrixStudent, 'ABSENT'); await add('excused', matrixStudent, 'EXCUSED');
+    await add('cancelled', matrixStudent, 'PRESENT', 'FINALIZED', 'CANCELLED'); await add('open', matrixStudent, 'ABSENT', 'OPEN'); await add('only-excused', excusedStudent, 'EXCUSED');
+    const correction = await add('correction', correctionStudent, 'ABSENT');
+    const matrix = await run(() => AttendanceService.studentSummary(matrixStudent.toString()));
+    expect(matrix).toMatchObject({ present: 1, late: 1, absent: 1, excused: 1, attended: 2, totalFinalizedEligibleSessions: 4, attendancePercentage: 66.67 });
+    expect((await run(() => AttendanceService.studentSummary(excusedStudent.toString()))).attendancePercentage).toBeNull();
+    expect((await run(() => AttendanceService.studentSummary(lateJoiner.toString()))).totalFinalizedEligibleSessions).toBe(0);
+    const before = await run(() => AttendanceService.studentSummary(correctionStudent.toString())); expect(before.attendancePercentage).toBe(0);
+    const analyticsBefore = await run(() => AttendanceService.batchAnalytics(batchId.toString(), { threshold: 100 }, admin));
+    await run(() => AttendanceService.correct(correction.rid.toString(), { status: 'PRESENT', reason: 'Verified register', idempotencyKey: 'matrix-correction' }, admin));
+    await run(() => AttendanceService.correct(correction.rid.toString(), { status: 'PRESENT', reason: 'Verified register', idempotencyKey: 'matrix-correction' }, admin));
+    const after = await run(() => AttendanceService.studentSummary(correctionStudent.toString())); expect(after.attendancePercentage).toBe(100);
+    const analytics = await run(() => AttendanceService.batchAnalytics(batchId.toString(), { threshold: 100 }, admin));
+    expect(analytics.finalizedSessions).toBe(15); // original + 8 race + 4 matrix + excused + correction
+    expect(analytics.students.find((row: any) => row.studentId === matrixStudent.toString()).attendancePercentage).toBe(66.67);
+    expect(analytics.totals.present).toBe(analyticsBefore.totals.present + 1); expect(analytics.totals.absent).toBe(analyticsBefore.totals.absent - 1);
+    expect(await AttendanceCorrectionModel.collection.countDocuments({ attendanceRecordId: correction.rid })).toBe(1);
+    expect((await AttendanceRecordModel.collection.findOne({ _id: correction.rid }))?.correctionCount).toBe(1);
+  });
+});

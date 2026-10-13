@@ -1,0 +1,14 @@
+import { Router } from 'express';
+import { PERMISSIONS } from '@edtech/permissions';
+import { CertificateController } from '../../controllers/certificate.controller';
+import { authenticate } from '../../middleware/auth.middleware';
+import { ensureWorkspaceContext } from '../../middleware/tenant.middleware';
+import { requirePermission } from '../../middleware/rbac.middleware';
+const router: Router = Router(); router.use(authenticate); router.use(ensureWorkspaceContext);
+router.get('/eligibility', requirePermission(PERMISSIONS.CERTIFICATE_ISSUE), CertificateController.eligibility);
+router.post('/', requirePermission(PERMISSIONS.CERTIFICATE_ISSUE), CertificateController.issue);
+router.get('/', requirePermission(PERMISSIONS.CERTIFICATE_VIEW), CertificateController.list);
+router.get('/:id/download', requirePermission(PERMISSIONS.CERTIFICATE_VIEW), CertificateController.adminDownload);
+router.post('/:id/revoke', requirePermission(PERMISSIONS.CERTIFICATE_REVOKE), CertificateController.revoke);
+router.post('/:id/artifact/retry', requirePermission(PERMISSIONS.CERTIFICATE_ARTIFACT_RETRY), CertificateController.retry);
+export default router;

@@ -1,0 +1,13 @@
+import {Router} from 'express';
+import {PERMISSIONS} from '@edtech/permissions';
+import {AIController} from '../../controllers/ai.controller';
+import {authenticate} from '../../middleware/auth.middleware';
+import {ensureWorkspaceContext} from '../../middleware/tenant.middleware';
+import {requirePermission} from '../../middleware/rbac.middleware';
+const r:Router=Router();r.use(authenticate,ensureWorkspaceContext);
+r.get('/settings',requirePermission(PERMISSIONS.AI_SETTINGS_READ),AIController.settings);r.patch('/settings',requirePermission(PERMISSIONS.AI_SETTINGS_MANAGE),AIController.updateSettings);
+r.get('/models',requirePermission(PERMISSIONS.AI_USE),AIController.models);r.get('/capabilities',requirePermission(PERMISSIONS.AI_USE),AIController.capabilities);r.post('/execute',requirePermission(PERMISSIONS.AI_USE),AIController.execute);
+r.get('/executions',requirePermission(PERMISSIONS.AI_EXECUTIONS_READ),AIController.executions);r.get('/executions/:id',requirePermission(PERMISSIONS.AI_EXECUTIONS_READ),AIController.execution);r.get('/usage',requirePermission(PERMISSIONS.AI_USAGE_READ),AIController.usage);
+r.post('/crm/leads/:leadId/summary',requirePermission(PERMISSIONS.AI_CRM_GENERATE),AIController.crm('CRM_LEAD_SUMMARY'));r.post('/crm/leads/:leadId/classify',requirePermission(PERMISSIONS.AI_CRM_GENERATE),AIController.crm('CRM_LEAD_CLASSIFICATION'));r.post('/crm/leads/:leadId/next-action',requirePermission(PERMISSIONS.AI_CRM_GENERATE),AIController.crm('CRM_NEXT_BEST_ACTION'));r.post('/crm/leads/:leadId/follow-up-draft',requirePermission(PERMISSIONS.AI_CRM_GENERATE),AIController.crm('CRM_FOLLOWUP_DRAFT'));
+r.post('/communications/draft',requirePermission(PERMISSIONS.AI_COMMUNICATION_GENERATE),AIController.execute);r.post('/communications/drafts/:id/publish',requirePermission(PERMISSIONS.COMMUNICATION_ANNOUNCEMENT_PUBLISH),AIController.confirmCommunication);
+export default r;

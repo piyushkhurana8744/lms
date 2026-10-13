@@ -1,0 +1,36 @@
+{
+  "name": "didm-lms-platform",
+  "private": true,
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "dev:web": "pnpm --filter @edtech/web dev",
+    "dev:api": "pnpm --filter @edtech/api dev",
+    "dev:worker": "pnpm --filter @edtech/worker dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "type-check": "turbo run type-check",
+    "test": "vitest run",
+    "test:integration:mongo": "node scripts/run-mongo-integration.mjs",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "clean": "turbo run clean && rm -rf node_modules",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "demo:seed": "tsx scripts/demo-seed.ts",
+    "demo:reset": "tsx scripts/demo-reset.ts",
+    "demo:verify": "tsx scripts/demo-verify.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.0",
+    "mongodb-memory-server": "^10.4.3",
+    "tsx": "^4.23.12",
+    "turbo": "^2.4.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.9"
+  },
+  "packageManager": "pnpm@10.24.0",
+  "engines": {
+    "node": ">=18.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

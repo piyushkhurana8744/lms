@@ -1,0 +1,385 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =============================================
+   DIDM LMS UNIFIED LUXURY DESIGN SYSTEM
+   Brand Accent: #BE1E2E (DIDM Crimson)
+   ============================================= */
+
+/* LIGHT THEME */
+:root {
+  /* Network-independent system stacks keep production builds reproducible. */
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: "Plus Jakarta Sans", Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --background: #FFFFFF;
+  --foreground: #0F172A;
+  --card: #FFFFFF;
+  --card-foreground: #0F172A;
+  --popover: #FFFFFF;
+  --popover-foreground: #0F172A;
+  --primary: #BE1E2E;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F1F5F9;
+  --secondary-foreground: #0F172A;
+  --muted: #F8FAFC;
+  --muted-foreground: #64748B;
+  --accent: #F1F5F9;
+  --accent-foreground: #0F172A;
+  --destructive: #EF4444;
+  --destructive-foreground: #FFFFFF;
+  --border: #E2E8F0;
+  --input: #E2E8F0;
+  --ring: #BE1E2E;
+
+  --brand-primary: #BE1E2E;
+  --brand-primary-rgb: 190, 30, 46;
+  --brand-secondary: #FFFFFF;
+  --brand-background: #F8FAFC;
+  --bg-surface: #FFFFFF;
+  --bg-surface-elevated: #F1F5F9;
+  --brand-card-bg: #FFFFFF;
+  --brand-text: #0F172A;
+  --text-muted: #64748B;
+  --text-faint: #94A3B8;
+  --brand-border: #E2E8F0;
+  --brand-accent: #BE1E2E;
+  --shadow-card: 0 4px 20px -2px rgba(15, 23, 42, 0.06), 0 2px 6px -1px rgba(15, 23, 42, 0.04);
+  --shadow-card-hover: 0 10px 25px -5px rgba(15, 23, 42, 0.1), 0 8px 10px -6px rgba(15, 23, 42, 0.05);
+  --gradient-from: #BE1E2E;
+  --gradient-to: #E11D48;
+  --glow-opacity: 0.12;
+  --glow-color-1: rgba(254, 226, 226, 0.7);
+  --glow-color-2: rgba(253, 242, 248, 0.8);
+  --nav-bg: #FFFFFF;
+
+  /* Input / Form Tokens */
+  --input-bg: #FFFFFF;
+  --input-border: #CBD5E1;
+  --input-focus-ring: rgba(190, 30, 46, 0.22);
+
+  /* Table Tokens */
+  --table-header-bg: #F8FAFC;
+  --table-row-hover: #F1F5F9;
+  --table-stripe: #F8FAFC;
+
+  /* Modal / Overlay */
+  --overlay-bg: rgba(15, 23, 42, 0.65);
+  --modal-bg: #FFFFFF;
+
+  /* Badge Tokens */
+  --badge-bg: #F1F5F9;
+  --badge-text: #334155;
+
+  color-scheme: light;
+}
+
+/* LUXURY DARK THEME — Deep Charcoal & Obsidian */
+html.dark,
+[data-theme="dark"],
+.dark {
+  --background: #090B10;
+  --foreground: #F1F5F9;
+  --card: #121622;
+  --card-foreground: #F1F5F9;
+  --popover: #121622;
+  --popover-foreground: #F1F5F9;
+  --primary: #E53E4F;
+  --primary-foreground: #FFFFFF;
+  --secondary: #1A2030;
+  --secondary-foreground: #F1F5F9;
+  --muted: #151926;
+  --muted-foreground: #94A3B8;
+  --accent: #1A2030;
+  --accent-foreground: #F1F5F9;
+  --destructive: #7F1D1D;
+  --destructive-foreground: #F87171;
+  --border: rgba(255, 255, 255, 0.12);
+  --input: rgba(255, 255, 255, 0.15);
+  --ring: #E53E4F;
+
+  --brand-primary: #E53E4F;
+  --brand-primary-rgb: 229, 62, 79;
+  --brand-secondary: #11141E;
+  --brand-background: #090B10;
+  --bg-surface: #121622;
+  --bg-surface-elevated: #1A2030;
+  --brand-card-bg: #121622;
+  --brand-text: #F1F5F9;
+  --text-muted: #94A3B8;
+  --text-faint: #64748B;
+  --brand-border: rgba(255, 255, 255, 0.12);
+  --brand-accent: #E53E4F;
+  --shadow-card: 0 10px 30px -5px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --shadow-card-hover: 0 20px 40px -10px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(229, 62, 79, 0.3);
+  --gradient-from: #BE1E2E;
+  --gradient-to: #F43F5E;
+  --glow-opacity: 0.22;
+  --glow-color-1: rgba(190, 30, 46, 0.2);
+  --glow-color-2: rgba(229, 62, 79, 0.12);
+  --nav-bg: #121622;
+
+  /* Input / Form Tokens */
+  --input-bg: #1A2030;
+  --input-border: rgba(255, 255, 255, 0.12);
+  --input-focus-ring: rgba(229, 62, 79, 0.35);
+
+  /* Table Tokens */
+  --table-header-bg: #151926;
+  --table-row-hover: #1A2030;
+  --table-stripe: #151926;
+
+  /* Modal / Overlay */
+  --overlay-bg: rgba(0, 0, 0, 0.8);
+  --modal-bg: #141824;
+
+  /* Badge Tokens */
+  --badge-bg: rgba(255, 255, 255, 0.08);
+  --badge-text: #CBD5E1;
+
+  color-scheme: dark;
+}
+
+/* ========================
+   GLOBAL BASE STYLES
+   ======================== */
+body {
+  background-color: var(--brand-background);
+  color: var(--brand-text);
+  min-height: 100vh;
+  transition: background-color 0.25s ease, color 0.2s ease;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-heading), var(--font-sans), sans-serif;
+  letter-spacing: -0.02em;
+}
+
+/* ========================
+   GLOBAL FORM CONTROLS
+   ======================== */
+input, textarea, select {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--brand-accent);
+  box-shadow: 0 0 0 3px var(--input-focus-ring);
+}
+
+html.dark input,
+html.dark textarea,
+html.dark select,
+[data-theme="dark"] input,
+[data-theme="dark"] textarea,
+[data-theme="dark"] select,
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: var(--input-bg);
+  color: var(--brand-text);
+  border-color: var(--input-border);
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder,
+[data-theme="dark"] input::placeholder,
+[data-theme="dark"] textarea::placeholder,
+.dark input::placeholder,
+.dark textarea::placeholder {
+  color: var(--text-faint);
+}
+
+html.dark select option,
+[data-theme="dark"] select option,
+.dark select option {
+  background-color: #1A2030;
+  color: #F1F5F9;
+}
+
+/* ========================
+   PREMIUM UTILITY CLASSES
+   ======================== */
+.glass-card {
+  background-color: var(--brand-card-bg);
+  border: 1px solid var(--brand-border);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border-radius: 1rem;
+}
+
+.glass-card-premium {
+  background: var(--brand-card-bg);
+  border: 1px solid var(--brand-border);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(20px) saturate(190%);
+  -webkit-backdrop-filter: blur(20px) saturate(190%);
+  border-radius: 1.25rem;
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.2s ease;
+}
+
+.glass-card-premium:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+}
+
+.card-interactive {
+  transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.18s ease;
+}
+
+.card-interactive:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-card-hover);
+  border-color: rgba(190, 30, 46, 0.35);
+}
+
+.gradient-text {
+  background: linear-gradient(135deg, var(--gradient-from) 0%, var(--gradient-to) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gradient-text-gold {
+  background: linear-gradient(135deg, #F59E0B 0%, #D97706 50%, #B45309 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gradient-text-blue {
+  background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.btn-primary, .btn-brand {
+  background: linear-gradient(135deg, var(--brand-primary) 0%, #D91B2C 100%);
+  color: #FFFFFF;
+  box-shadow: 0 4px 14px rgba(var(--brand-primary-rgb), 0.28);
+  font-weight: 600;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.btn-primary:hover, .btn-brand:hover {
+  box-shadow: 0 8px 24px rgba(var(--brand-primary-rgb), 0.42);
+  filter: brightness(1.06);
+  transform: translateY(-1px);
+}
+
+.btn-primary:active, .btn-brand:active {
+  transform: translateY(0);
+}
+
+/* Pill badge styling */
+.badge-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+/* Glow Orb Backgrounds */
+.glow-orb-primary {
+  background: var(--glow-color-1);
+}
+
+.glow-orb-secondary {
+  background: var(--glow-color-2);
+}
+
+/* ========================
+   TABLE STYLING
+   ======================== */
+table thead {
+  background-color: var(--table-header-bg);
+}
+
+table tbody tr {
+  transition: background-color 0.12s ease;
+}
+
+table tbody tr:hover {
+  background-color: var(--table-row-hover);
+}
+
+/* ========================
+   CUSTOM SCROLLBARS
+   ======================== */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 9999px;
+}
+
+html.dark ::-webkit-scrollbar-thumb,
+[data-theme="dark"] ::-webkit-scrollbar-thumb,
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(190, 30, 46, 0.6);
+}
+
+/* ========================
+   SELECTION HIGHLIGHT
+   ======================== */
+::selection {
+  background-color: #BE1E2E;
+  color: #FFFFFF;
+}
+
+/* =============================================
+   SOLID OPAQUE SURFACES ACROSS THE LMS
+   Guarantees no accidental transparency in cards,
+   modals, panels, dropdowns, and dialogs.
+   ============================================= */
+.bg-card {
+  background-color: var(--card) !important;
+}
+
+.bg-popover {
+  background-color: var(--popover) !important;
+}
+
+.bg-background {
+  background-color: var(--background) !important;
+}
+
+.bg-muted {
+  background-color: var(--muted) !important;
+}
+
+.border-border {
+  border-color: var(--border) !important;
+}
+
+.text-foreground {
+  color: var(--foreground) !important;
+}
+
+.text-muted-foreground {
+  color: var(--muted-foreground) !important;
+}
+
+.text-card-foreground {
+  color: var(--card-foreground) !important;
+}

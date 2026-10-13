@@ -1,0 +1,16 @@
+import { Router } from 'express';
+import { AttendanceController } from '../../controllers/attendance.controller';
+import { authenticate } from '../../middleware/auth.middleware';
+import { ensureWorkspaceContext } from '../../middleware/tenant.middleware';
+import { requirePermission } from '../../middleware/rbac.middleware';
+import { PERMISSIONS } from '@edtech/permissions';
+const router: Router = Router(); router.use(authenticate); router.use(ensureWorkspaceContext);
+router.get('/classes/:classId', requirePermission(PERMISSIONS.ATTENDANCE_VIEW), AttendanceController.getClass);
+router.post('/classes/:classId/open', requirePermission(PERMISSIONS.ATTENDANCE_MARK), AttendanceController.open);
+router.put('/sessions/:sessionId/records', requirePermission(PERMISSIONS.ATTENDANCE_MARK), AttendanceController.mark);
+router.post('/sessions/:sessionId/mark-all-present', requirePermission(PERMISSIONS.ATTENDANCE_MARK), AttendanceController.markAll);
+router.post('/sessions/:sessionId/finalize', requirePermission(PERMISSIONS.ATTENDANCE_FINALIZE), AttendanceController.finalize);
+router.post('/records/:recordId/correct', requirePermission(PERMISSIONS.ATTENDANCE_CORRECT), AttendanceController.correct);
+router.get('/sessions/:sessionId/history', requirePermission(PERMISSIONS.ATTENDANCE_CORRECT), AttendanceController.history);
+router.get('/batches/:batchId/analytics', requirePermission(PERMISSIONS.ATTENDANCE_REPORT_VIEW), AttendanceController.batch);
+export default router;

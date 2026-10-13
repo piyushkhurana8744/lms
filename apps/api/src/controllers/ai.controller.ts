@@ -1,0 +1,22 @@
+import {NextFunction,Request,Response} from 'express';
+import {z} from 'zod';
+import {AIService} from '../services/ai/ai.service';
+import {AI_MODELS,AICapability} from '../services/ai/aiRegistry';
+import {aiToolCatalog} from '../services/ai/aiToolRegistry';
+import {CommunicationAnnouncementService} from '../services/communication/communicationAnnouncement.service';
+import {BadRequestError} from '../errors/appError';
+const actor=(req:Request)=>{const u:any=(req as any).user;return{userId:u.userId,isSuperAdmin:Boolean(u.isSuperAdmin),permissions:u.permissions||[],name:u.name||u.email}};
+const settingsSchema=z.object({enabled:z.boolean().optional(),defaultProvider:z.enum(['OPENAI','TEST']).optional(),defaultModel:z.string().max(100).optional(),allowedCapabilities:z.array(AICapability).max(20).optional(),monthlyTokenLimit:z.number().int().min(0).max(1_000_000_000).optional(),perRequestTokenLimit:z.number().int().min(1).max(32768).optional(),dailyRequestLimit:z.number().int().min(1).max(1_000_000).optional(),apiKey:z.string().min(8).max(500).optional()}).strict();
+const executeSchema=z.object({capability:AICapability,leadId:z.string().regex(/^[a-f\d]{24}$/i).optional(),draftContext:z.object({purpose:z.string().min(1).max(1000),audience:z.string().max(300).optional(),tone:z.string().max(50).optional(),facts:z.array(z.string().max(500)).max(20).optional()}).strict().optional(),idempotencyKey:z.string().min(8).max(160).optional(),maxOutputTokens:z.number().int().min(1).max(32768).optional()}).strict();
+export class AIController{
+ static async settings(req:Request,res:Response,next:NextFunction){try{res.json({success:true,data:await AIService.settings()});}catch(e){next(e)}}
+ static async updateSettings(req:Request,res:Response,next:NextFunction){try{res.json({success:true,data:await AIService.updateSettings(settingsSchema.parse(req.body),actor(req))});}catch(e){next(e)}}
+ static async models(_req:Request,res:Response){res.json({success:true,data:AI_MODELS.filter(x=>x.enabled).map(({providerModel,inputCostMicrosPerMillion,outputCostMicrosPerMillion,...safe})=>safe)});}
+ static async capabilities(_req:Request,res:Response){res.json({success:true,data:{capabilities:AICapability.options,tools:aiToolCatalog()}});}
+ static async execute(req:Request,res:Response,next:NextFunction){try{res.status(201).json({success:true,data:await AIService.execute(executeSchema.parse(req.body),actor(req))});}catch(e){next(e)}}
+ static crm(capability:any){return async(req:Request,res:Response,next:NextFunction)=>{try{res.status(201).json({success:true,data:await AIService.execute({capability,leadId:String(req.params.leadId),idempotencyKey:req.header('idempotency-key')||undefined,maxOutputTokens:req.body?.maxOutputTokens},actor(req))});}catch(e){next(e)}}}
+ static async executions(req:Request,res:Response,next:NextFunction){try{const r=await AIService.listExecutions(req.query,actor(req));res.json({success:true,...r});}catch(e){next(e)}}
+ static async execution(req:Request,res:Response,next:NextFunction){try{res.json({success:true,data:await AIService.getExecution(String(req.params.id))});}catch(e){next(e)}}
+ static async usage(req:Request,res:Response,next:NextFunction){try{res.json({success:true,data:await AIService.usage(req.query)});}catch(e){next(e)}}
+ static async confirmCommunication(req:Request,res:Response,next:NextFunction){try{const execution:any=await AIService.getExecution(String(req.params.id));if(execution.status!=='COMPLETED'||execution.capability!=='COMMUNICATION_ANNOUNCEMENT_DRAFT')throw new BadRequestError('Completed communication draft required');const input=z.object({audienceType:z.enum(['ALL_AUTHORIZED','BRANCH','BATCH','COURSE','STUDENTS','INSTRUCTORS','STAFF','SPECIFIC_USERS']),audienceCriteria:z.object({branchIds:z.array(z.string()).optional(),batchIds:z.array(z.string()).optional(),courseIds:z.array(z.string()).optional(),userIds:z.array(z.string()).optional(),roles:z.array(z.string()).optional()}).default({}),branchId:z.string().optional(),channels:z.array(z.enum(['IN_APP','EMAIL'])).min(1).max(2).default(['IN_APP'])}).strict().parse(req.body);const draft:any=execution.structuredResult;const announcement=await CommunicationAnnouncementService.createAnnouncement({...input,title:draft.title,body:draft.body,priority:draft.priority,idempotencyKey:`ai:${execution._id}`},actor(req));const published=await CommunicationAnnouncementService.publishAnnouncement(announcement.id,actor(req));res.json({success:true,data:published});}catch(e){next(e)}}
+}

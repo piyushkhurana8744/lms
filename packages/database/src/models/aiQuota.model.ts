@@ -1,0 +1,3 @@
+import {Schema,model,Document,Types} from 'mongoose';
+export interface IAIQuotaDocument extends Document{tenantId:Types.ObjectId;period:string;reservedTokens:number;actualTokens:number;requestCount:number;}
+const AIQuotaSchema=new Schema<IAIQuotaDocument>({tenantId:{type:Schema.Types.ObjectId,required:true},period:{type:String,required:true},reservedTokens:{type:Number,default:0},actualTokens:{type:Number,default:0},requestCount:{type:Number,default:0}},{timestamps:true});AIQuotaSchema.index({tenantId:1,period:1},{unique:true});export const AIQuotaModel=model<IAIQuotaDocument>('AIQuota',AIQuotaSchema);

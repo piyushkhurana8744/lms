@@ -1,0 +1,7 @@
+import {z} from 'zod';
+import {PERMISSIONS} from '@edtech/permissions';
+import {BadRequestError,ForbiddenError} from '../../errors/appError';
+export const AI_TOOLS={GET_LEAD_CONTEXT:{mode:'READ_ONLY',permission:PERMISSIONS.AI_CRM_READ,input:z.object({leadId:z.string().regex(/^[a-f\d]{24}$/i)}).strict()},DRAFT_COMMUNICATION:{mode:'DRAFT_ONLY',permission:PERMISSIONS.AI_COMMUNICATION_GENERATE,input:z.object({purpose:z.string().min(1).max(1000)}).strict()},CREATE_CRM_FOLLOWUP:{mode:'CONFIRM_REQUIRED',permission:PERMISSIONS.FOLLOW_UP_MANAGE,input:z.object({leadId:z.string().regex(/^[a-f\d]{24}$/i),type:z.enum(['CALL','WHATSAPP','EMAIL','DEMO','COUNSELLING','GENERAL']),dueAt:z.string().datetime(),note:z.string().max(500).optional()}).strict()}} as const;
+export type AIToolKey=keyof typeof AI_TOOLS;
+export function validateAIToolProposal(proposal:unknown,permissions:string[],confirmed=false){const p=z.object({tool:z.string(),input:z.unknown()}).strict().parse(proposal);const tool=(AI_TOOLS as any)[p.tool];if(!tool)throw new BadRequestError('AI tool is not registered');if(!permissions.includes(tool.permission)&&!permissions.includes(PERMISSIONS.SUPERADMIN_ALL))throw new ForbiddenError('AI tool permission denied');if(tool.mode==='CONFIRM_REQUIRED'&&!confirmed)throw new ForbiddenError('Human confirmation required');return{key:p.tool as AIToolKey,mode:tool.mode,input:tool.input.parse(p.input)};}
+export const aiToolCatalog=()=>Object.entries(AI_TOOLS).map(([key,v])=>({key,mode:v.mode,requiredPermission:v.permission}));
