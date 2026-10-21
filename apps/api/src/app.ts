@@ -16,6 +16,7 @@ import { NotificationService } from './services/notification.service';
 import { AutomationService } from './services/automation.service';
 import { LiveClassOrchestratorService } from './services/integrations/orchestration/liveClassOrchestrator.service';
 import { IntegrationProviderRegistry } from './services/integrations/registry/providerRegistry.service';
+import { ZoomRecordingService } from './services/integrations/orchestration/zoomRecording.service';
 
 function authorizeInternalWorker(value?: string): boolean {
   const expected = process.env.INTERNAL_WORKER_SECRET || '';
@@ -114,6 +115,13 @@ export function createApp(): Express {
       const operation: any = await IntegrationOperationModel.findById(req.params.id).setOptions({ bypassTenantFilter: true });
       if (!operation) return res.status(404).json({ success: false, error: 'Integration operation not found' });
       if (operation.status === 'COMPLETED') return res.json({ success: true, data: { status: 'COMPLETED' }, error: null });
+      if (operation.operationType === 'SYNC_RECORDING') {
+        operation.status = 'PROCESSING'; operation.startedAt = new Date(); operation.attempts += 1; await operation.save();
+        const data = await ZoomRecordingService.sync(operation.canonicalResourceId);
+        operation.status = 'COMPLETED'; operation.completedAt = new Date(); operation.nextRetryAt = null;
+        operation.errorCategory = null; operation.errorDetails = null; await operation.save();
+        return res.json({ success: true, data: { id: data._id.toString(), state: data.state }, error: null });
+      }
       const cls: any = await ClassModel.findOne({ _id: operation.canonicalResourceId, tenantId: operation.tenantId }).setOptions({ bypassTenantFilter: true });
       if (!cls) return res.status(404).json({ success: false, error: 'Canonical class not found' });
       const tenantId = operation.tenantId.toString();

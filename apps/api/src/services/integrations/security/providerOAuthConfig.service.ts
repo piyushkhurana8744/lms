@@ -47,9 +47,32 @@ export const PROVIDER_SCOPES: Record<IntegrationProvider, string[]> = {
 const commonVariables = ['API_PUBLIC_URL', 'WEB_APP_URL', 'OAUTH_STATE_SECRET', 'STORAGE_ENCRYPTION_KEY'];
 const value = (name: string) => String(process.env[name] || '').trim();
 
-function validAbsoluteUrl(raw: string): boolean {
-  try { const parsed = new URL(raw); return parsed.protocol === 'http:' || parsed.protocol === 'https:'; }
-  catch { return false; }
+function parseBaseUrl(raw: string): URL | null {
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+    return parsed;
+  } catch { return null; }
+}
+
+function isLoopback(hostname: string): boolean {
+  return ['localhost', '127.0.0.1', '::1', '[::1]'].includes(hostname.toLowerCase());
+}
+
+function validateBaseUrl(name: 'API_PUBLIC_URL' | 'WEB_APP_URL', raw: string, invalid: string[]): URL | null {
+  const parsed = parseBaseUrl(raw);
+  if (!parsed) {
+    if (raw) invalid.push(name);
+    return null;
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash || (parsed.pathname && parsed.pathname !== '/')) {
+    invalid.push(`${name}_MUST_BE_ORIGIN`);
+  }
+  const publicHttp = parsed.protocol !== 'https:' && !isLoopback(parsed.hostname);
+  if ((process.env.NODE_ENV === 'production' || publicHttp) && parsed.protocol !== 'https:') {
+    invalid.push(`${name}_REQUIRES_HTTPS`);
+  }
+  return parsed;
 }
 
 export class ProviderOAuthConfigService {
@@ -64,24 +87,60 @@ export class ProviderOAuthConfigService {
     const apiUrl = value('API_PUBLIC_URL');
     const webUrl = value('WEB_APP_URL');
 
-    if (apiUrl && !validAbsoluteUrl(apiUrl)) invalidConfiguration.push('API_PUBLIC_URL');
-    if (webUrl && !validAbsoluteUrl(webUrl)) invalidConfiguration.push('WEB_APP_URL');
-    if (process.env.NODE_ENV === 'production') {
-      if (apiUrl && !apiUrl.startsWith('https://')) invalidConfiguration.push('API_PUBLIC_URL_REQUIRES_HTTPS');
-      if (webUrl && !webUrl.startsWith('https://')) invalidConfiguration.push('WEB_APP_URL_REQUIRES_HTTPS');
-    }
+    const parsedApiUrl = validateBaseUrl('API_PUBLIC_URL', apiUrl, invalidConfiguration);
+    validateBaseUrl('WEB_APP_URL', webUrl, invalidConfiguration);
     if (value('OAUTH_STATE_SECRET') && value('OAUTH_STATE_SECRET').length < 32) invalidConfiguration.push('OAUTH_STATE_SECRET_TOO_SHORT');
     if (value('STORAGE_ENCRYPTION_KEY') && value('STORAGE_ENCRYPTION_KEY').length < 32) invalidConfiguration.push('STORAGE_ENCRYPTION_KEY_TOO_SHORT');
 
-    const base = validAbsoluteUrl(apiUrl) ? apiUrl.replace(/\/$/, '') : '';
+    // URL.origin canonicalizes trailing slashes without trusting request/proxy headers.
+    // OAuth providers must see the same deployment-configured URI during both steps.
+    const base = parsedApiUrl ? parsedApiUrl.origin : '';
     const slug = provider.toLowerCase();
+
+    const customZoomCallbackUrl = provider === 'ZOOM' ? value('ZOOM_CALLBACK_URL') : '';
+    let resolvedCallbackUrl = base ? `${base}/api/v1/integrations/connections/${slug}/callback` : '';
+    if (provider === 'ZOOM') {
+      if (customZoomCallbackUrl) {
+        const parsedCallback = parseBaseUrl(customZoomCallbackUrl);
+        if (!parsedCallback) {
+          invalidConfiguration.push('ZOOM_CALLBACK_URL');
+        } else if (parsedCallback.protocol !== 'https:') {
+          invalidConfiguration.push('ZOOM_CALLBACK_URL_REQUIRES_HTTPS');
+        } else {
+          resolvedCallbackUrl = customZoomCallbackUrl;
+        }
+      }
+
+      const isCallbackHttps = resolvedCallbackUrl.startsWith('https://');
+      if (!isCallbackHttps) {
+        invalidConfiguration.push('API_PUBLIC_URL_REQUIRES_HTTPS_FOR_ZOOM');
+      }
+    }
+
+    const customZoomWebhookUrl = provider === 'ZOOM' ? value('ZOOM_WEBHOOK_URL') : '';
+    let resolvedZoomWebhookUrl: string | undefined = undefined;
+    if (provider === 'ZOOM') {
+      if (customZoomWebhookUrl) {
+        const parsedWebhook = parseBaseUrl(customZoomWebhookUrl);
+        if (!parsedWebhook) {
+          invalidConfiguration.push('ZOOM_WEBHOOK_URL');
+        } else if (parsedWebhook.protocol !== 'https:') {
+          invalidConfiguration.push('ZOOM_WEBHOOK_URL_REQUIRES_HTTPS');
+        } else {
+          resolvedZoomWebhookUrl = customZoomWebhookUrl;
+        }
+      } else if (base) {
+        resolvedZoomWebhookUrl = `${base}/api/v1/integrations/webhooks/zoom`;
+      }
+    }
+
     return {
       provider,
       clientId: value(clientIdName),
       clientSecret: value(clientSecretName),
       scopes: PROVIDER_SCOPES[provider],
-      callbackUrl: base ? `${base}/api/v1/integrations/connections/${slug}/callback` : '',
-      webhookUrl: provider === 'ZOOM' && base ? `${base}/api/v1/integrations/webhooks/zoom` : undefined,
+      callbackUrl: resolvedCallbackUrl,
+      webhookUrl: resolvedZoomWebhookUrl,
       requiredEnvironment,
       missingConfiguration,
       invalidConfiguration,

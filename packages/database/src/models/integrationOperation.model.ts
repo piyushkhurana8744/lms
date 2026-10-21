@@ -42,7 +42,7 @@ const IntegrationOperationSchema = new Schema<IIntegrationOperationDocument>(
     connectionId: { type: Schema.Types.ObjectId, ref: 'IntegrationConnection', default: null },
     operationType: {
       type: String,
-      enum: ['CREATE_MEETING', 'RESCHEDULE_MEETING', 'CANCEL_MEETING', 'SYNC_CLASSROOM', 'RECONCILE'],
+      enum: ['CREATE_MEETING', 'RESCHEDULE_MEETING', 'CANCEL_MEETING', 'SYNC_CLASSROOM', 'SYNC_RECORDING', 'RECONCILE'],
       required: true,
       index: true
     },

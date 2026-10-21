@@ -3104,7 +3104,7 @@ export interface IJoinInformationDTO {
   syncStatus: ExternalMeetingSyncStatus;
 }
 
-export type IntegrationOperationType = 'CREATE_MEETING' | 'RESCHEDULE_MEETING' | 'CANCEL_MEETING' | 'SYNC_CLASSROOM' | 'RECONCILE';
+export type IntegrationOperationType = 'CREATE_MEETING' | 'RESCHEDULE_MEETING' | 'CANCEL_MEETING' | 'SYNC_CLASSROOM' | 'SYNC_RECORDING' | 'RECONCILE';
 export type IntegrationOperationStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'RETRYABLE';
 export type IntegrationErrorCategory =
   | 'AUTH_REQUIRED'

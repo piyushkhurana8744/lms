@@ -41,7 +41,7 @@ export class IntegrationOperationService {
   public static classifyError(err: any): { category: IntegrationErrorCategory; isRetryable: boolean } {
     const msg = String(err?.message || '').toLowerCase();
     const status = err?.status || err?.statusCode;
-    const code = String(err?.code || '').toUpperCase();
+    const code = String(err?.category || err?.code || '').toUpperCase();
 
     if (status === 401 || code === 'AUTH_REQUIRED' || msg.includes('oauth') || msg.includes('token expired') || msg.includes('auth_expired')) {
       return { category: 'AUTH_REQUIRED', isRetryable: false };

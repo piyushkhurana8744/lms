@@ -3,14 +3,15 @@ import mongoose from 'mongoose';
 import {
   IntegrationConnectionModel,
   IntegrationOAuthStateModel,
-  LiveMeetingAssociationHistoryModel
+  LiveMeetingAssociationHistoryModel,
+  LiveClassRecordingModel
 } from '@edtech/database';
 
 dotenv.config();
 
 type DuplicateCheck = {
   label: string;
-  model: typeof IntegrationConnectionModel | typeof IntegrationOAuthStateModel | typeof LiveMeetingAssociationHistoryModel;
+  model: any;
   match?: Record<string, unknown>;
   group: Record<string, string>;
 };
@@ -28,7 +29,8 @@ const duplicateChecks: DuplicateCheck[] = [
   {
     label: 'integration connection scope', model: IntegrationConnectionModel,
     group: { tenantId: '$tenantId', provider: '$provider', scopeType: '$scopeType', userId: '$userId', branchId: '$branchId' }
-  }
+  },
+  { label: 'Zoom recording identity', model: LiveClassRecordingModel, group: { tenantId: '$tenantId', provider: '$provider', providerMeetingId: '$providerMeetingId' } }
 ];
 
 async function assertNoDuplicates(check: DuplicateCheck): Promise<void> {
@@ -70,23 +72,31 @@ async function main(): Promise<void> {
       { name: 'tenantId_1_status_1', key: { tenantId: 1, status: 1 } },
       { name: 'tenantId_1_provider_1_status_1', key: { tenantId: 1, provider: 1, status: 1 } }
     ]);
+    await LiveClassRecordingModel.collection.createIndexes([
+      { name: 'tenantId_1_provider_1_providerMeetingId_1', key: { tenantId: 1, provider: 1, providerMeetingId: 1 }, unique: true },
+      { name: 'tenantId_1_classId_1_createdAt_-1', key: { tenantId: 1, classId: 1, createdAt: -1 } },
+      { name: 'state_1_nextRetryAt_1', key: { state: 1, nextRetryAt: 1 } }
+    ]);
 
     const evidence = await Promise.all([
       IntegrationOAuthStateModel.collection.indexes(),
       LiveMeetingAssociationHistoryModel.collection.indexes(),
-      IntegrationConnectionModel.collection.indexes()
+      IntegrationConnectionModel.collection.indexes(),
+      LiveClassRecordingModel.collection.indexes()
     ]);
     const readableCounts = await Promise.all([
       IntegrationOAuthStateModel.collection.countDocuments({}),
       LiveMeetingAssociationHistoryModel.collection.countDocuments({}),
-      IntegrationConnectionModel.collection.countDocuments({})
+      IntegrationConnectionModel.collection.countDocuments({}),
+      LiveClassRecordingModel.collection.countDocuments({})
     ]);
     console.log(JSON.stringify({
       status: 'PHASE_22_INDEXES_READY',
       collections: {
         integration_oauth_states: { readableRecords: readableCounts[0], indexes: evidence[0].map(({ name }) => name) },
         live_meeting_association_history: { readableRecords: readableCounts[1], indexes: evidence[1].map(({ name }) => name) },
-        integration_connections: { readableRecords: readableCounts[2], indexes: evidence[2].map(({ name }) => name) }
+        integration_connections: { readableRecords: readableCounts[2], indexes: evidence[2].map(({ name }) => name) },
+        live_class_recordings: { readableRecords: readableCounts[3], indexes: evidence[3].map(({ name }) => name) }
       }
     }, null, 2));
   } finally {

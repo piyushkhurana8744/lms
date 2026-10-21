@@ -243,6 +243,15 @@ export default function IntegrationsSettingsPage() {
                         </ul>
                       </details>
                     ) : null}
+                    {p.provider === 'ZOOM' && (
+                      <div className="mt-3 rounded-lg border border-blue-500/30 bg-blue-500/5 p-3 space-y-1 text-[var(--brand-text)]">
+                        <div className="font-semibold">Zoom OAuth deployment diagnostics</div>
+                        <div>Deployment: <span className="font-mono">{p.setupStatus || 'UNKNOWN'}</span></div>
+                        <div>OAuth callback: <span className="font-mono break-all">{p.callbackUrl || 'Set API_PUBLIC_URL to calculate this URL'}</span></div>
+                        <div>Callback HTTPS: <span className={p.callbackUrl?.startsWith('https://') ? 'text-emerald-600' : 'text-amber-700'}>{p.callbackUrl?.startsWith('https://') ? 'Yes' : 'No — use a stable HTTPS API origin for Zoom'}</span></div>
+                        <div className="text-[var(--text-muted)]">Copy this exact callback into Zoom Marketplace’s development OAuth redirect setting and equivalent OAuth allow-list setting. Configuration readiness does not mean a Zoom account is connected.</div>
+                      </div>
+                    )}
                     {setupRequired && (
                       <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-2 text-[var(--brand-text)]">
                         <div className="font-semibold">Deployment operator setup</div>

@@ -597,6 +597,13 @@ export const STUDENT_NAVIGATION_CONFIG: NavigationItem[] = [
     permissionMode: 'ANY'
   },
   {
+    name: 'Recorded Classes',
+    href: '/student/recordings',
+    icon: Video,
+    requiredPermissions: [PERMISSIONS.CLASS_VIEW, PERMISSIONS.COURSE_VIEW],
+    permissionMode: 'ANY'
+  },
+  {
     name: 'My Fees & Receipts',
     href: '/student/fees',
     icon: IndianRupee,
@@ -644,4 +651,3 @@ export const STUDENT_NAVIGATION_CONFIG: NavigationItem[] = [
     icon: Compass
   }
 ];
-

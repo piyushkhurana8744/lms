@@ -18,6 +18,7 @@ export interface CreateMeetingInput {
   organizerUserId: string;
   organizerEmail?: string;
   password?: string;
+  autoRecord?: boolean;
   idempotencyKey?: string;
 }
 
@@ -35,6 +36,7 @@ export interface MeetingResult {
   externalCalendarEventId?: string;
   joinUrl: string;
   hostUrl?: string;
+  password?: string;
   providerStatus: ExternalMeetingStatus;
   scheduledStart: Date;
   scheduledEnd: Date;

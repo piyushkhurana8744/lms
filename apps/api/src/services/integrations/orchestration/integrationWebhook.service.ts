@@ -10,6 +10,7 @@ import { SecretEncryptionService } from '../../security/secretEncryption.service
 import { LiveClassOrchestratorService } from './liveClassOrchestrator.service';
 import crypto from 'crypto';
 import { BadRequestError, UnauthorizedError } from '../../../errors/appError';
+import { ZoomRecordingService } from './zoomRecording.service';
 
 export class IntegrationWebhookService {
   /**
@@ -36,16 +37,6 @@ export class IntegrationWebhookService {
     if (deterministicTestBypass) return this.persistVerifiedZoomEvent(payload);
     if (!secret) throw new Error('ZOOM_WEBHOOK_SECRET is not configured');
 
-    // Zoom URL validation challenge handling
-    if (provider === 'ZOOM' && payload.event === 'endpoint.url_validation') {
-      const plainToken = payload.payload?.plainToken;
-      const hashForValidate = crypto
-        .createHmac('sha256', secret)
-        .update(plainToken || '')
-        .digest('hex');
-      return { status: 'OK', challenge: { plainToken, encryptedToken: hashForValidate } };
-    }
-
     const timestamp = String(headers['x-zm-request-timestamp'] || '');
     const signature = String(headers['x-zm-signature'] || '');
     if (!timestamp || !signature || !/^\d+$/.test(timestamp)) throw new UnauthorizedError('Missing Zoom webhook signature');
@@ -55,11 +46,26 @@ export class IntegrationWebhookService {
     const a = Buffer.from(signature); const b = Buffer.from(expected);
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw new UnauthorizedError('Invalid Zoom webhook signature');
 
+    // Validation requests are webhook deliveries too: authenticate the exact raw
+    // body before proving possession of the Secret Token.
+    if (payload.event === 'endpoint.url_validation') {
+      const plainToken = payload.payload?.plainToken;
+      if (typeof plainToken !== 'string' || !plainToken) throw new BadRequestError('Zoom validation plainToken is required');
+      const hashForValidate = crypto.createHmac('sha256', secret).update(plainToken).digest('hex');
+      return { status: 'OK', challenge: { plainToken, encryptedToken: hashForValidate } };
+    }
+
     return this.persistVerifiedZoomEvent(payload);
   }
 
   private static async persistVerifiedZoomEvent(payload: Record<string, any>): Promise<{ status: string; deduplicated?: boolean }> {
     const provider: IntegrationProvider = 'ZOOM';
+    const accountId = String(payload.payload?.account_id || payload.account_id || '');
+    const connection = accountId
+      ? await IntegrationConnectionModel.findOne({ provider, externalTenantId: accountId, status: { $in: ['CONNECTED', 'RECONNECT_REQUIRED', 'REAUTH_REQUIRED'] } }).setOptions({ bypassTenantFilter: true })
+      : null;
+    const deterministicTestEvent = process.env.NODE_ENV === 'test' && !accountId;
+    if (!connection && !deterministicTestEvent) throw new UnauthorizedError('Zoom webhook account is not connected');
     const externalEventId =
       payload.id ||
       payload.event_id ||
@@ -85,7 +91,9 @@ export class IntegrationWebhookService {
     if (!doc) {
       try {
         doc = await IntegrationWebhookEventModel.create({
+          tenantId: connection?.tenantId || null,
           provider,
+          connectionId: connection?._id || null,
           externalEventId,
           eventType,
           receivedAt: new Date(),
@@ -108,8 +116,19 @@ export class IntegrationWebhookService {
         const meetingId = String(payload.payload?.object?.id || '');
         if (meetingId) {
           await ExternalMeetingModel.updateOne(
-            { externalMeetingId: meetingId },
+            { tenantId: connection?.tenantId, connectionId: connection?._id, provider, externalMeetingId: meetingId },
             { $set: { providerStatus: 'COMPLETED', syncStatus: 'SYNCED', lastSyncedAt: new Date() } }
+          ).setOptions({ bypassTenantFilter: true });
+          if (connection) await ZoomRecordingService.signalMeetingEnded(connection._id.toString(), meetingId, new Date(Number(payload.event_ts || Date.now())));
+        }
+      }
+      if (provider === 'ZOOM' && eventType === 'recording.completed') {
+        const object = payload.payload?.object || {};
+        const meetingId = String(object.id || '');
+        if (meetingId && connection) {
+          await ZoomRecordingService.signalRecordingCompleted(
+            connection._id.toString(), meetingId, object.uuid ? String(object.uuid) : undefined,
+            new Date(Number(payload.event_ts || Date.now()))
           );
         }
       }

@@ -27,7 +27,10 @@ import {
   Users,
   CreditCard,
   BarChart3,
-  ShieldAlert
+  ShieldAlert,
+  Video,
+  Calendar,
+  Clock
 } from 'lucide-react';
 
 export default function AdminDashboardPage() {
@@ -59,6 +62,21 @@ export default function AdminDashboardPage() {
       return json.data;
     }
   });
+
+  // Fetch workspace live classes / zoom sessions
+  const { data: classesData, isLoading: isClassesLoading } = useQuery({
+    queryKey: ['admin-dashboard-classes'],
+    enabled: !!user,
+    queryFn: async () => {
+      const res = await fetch('/api/v1/classes?limit=20');
+      if (!res.ok) return { data: [] };
+      return res.json();
+    }
+  });
+
+  const onlineClasses = (classesData?.data || []).filter(
+    (c: any) => (c.mode === 'ONLINE' || c.mode === 'HYBRID') && c.status !== 'CANCELLED'
+  );
 
   const courses: ICourse[] = coursesData?.data || [];
   const totalCoursesCount = coursesData?.meta?.total ?? courses.length;
@@ -377,6 +395,104 @@ export default function AdminDashboardPage() {
             <p className="text-[11px] text-[var(--text-muted)] font-mono">Multi-tenant isolation active</p>
           </div>
         </div>
+      </div>
+
+      {/* Live Masterclasses & Zoom Sessions Section */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+              <h2 className="text-xl font-bold text-[var(--brand-text)] font-heading">Live Classes & Zoom Sessions</h2>
+            </div>
+            <p className="text-xs text-[var(--text-muted)] mt-0.5">
+              Real-time online sessions, Zoom meeting links, passcodes, and direct instructor/superadmin launch controls
+            </p>
+          </div>
+          <Link href="/admin/classes" className="text-xs font-bold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 font-mono">
+            Manage All Classes <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
+        </div>
+
+        {isClassesLoading ? (
+          <div className="glass-card p-8 text-center text-xs text-[var(--text-muted)] font-mono">
+            Loading scheduled live classes...
+          </div>
+        ) : onlineClasses.length === 0 ? (
+          <div className="glass-card p-6 rounded-2xl border border-[var(--brand-border)] text-center text-xs text-[var(--text-muted)]">
+            No live online classes scheduled yet. Create an Online or Hybrid class to automatically provision Zoom sessions.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {onlineClasses.slice(0, 6).map((cls: any) => {
+              const hasZoom = cls.zoomDetails?.meetingUrl;
+              return (
+                <div
+                  key={cls._id || cls.id}
+                  className="glass-card p-5 rounded-2xl border border-[var(--brand-border)] hover:border-blue-500/40 hover:shadow-lg transition-all space-y-3 flex flex-col justify-between"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold uppercase bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20 flex items-center gap-1">
+                        <Video className="w-3 h-3" /> {cls.mode}
+                      </span>
+                      {cls.timing?.startTime && (
+                        <span className="text-[10px] font-mono text-[var(--text-muted)] flex items-center gap-1">
+                          <Clock className="w-3 h-3" /> {cls.timing.startTime} - {cls.timing.endTime}
+                        </span>
+                      )}
+                    </div>
+
+                    <h3 className="font-extrabold text-sm text-[var(--brand-text)] line-clamp-1">{cls.name}</h3>
+
+                    {hasZoom ? (
+                      <div className="p-2.5 rounded-xl bg-blue-500/5 border border-blue-500/20 text-[11px] font-mono space-y-1">
+                        {cls.zoomDetails.meetingId && (
+                          <div className="flex justify-between">
+                            <span className="text-[var(--text-muted)]">ID:</span>
+                            <span className="font-bold text-[var(--brand-text)]">{cls.zoomDetails.meetingId}</span>
+                          </div>
+                        )}
+                        {cls.zoomDetails.passcode && (
+                          <div className="flex justify-between">
+                            <span className="text-[var(--text-muted)]">Passcode:</span>
+                            <span className="font-bold text-[var(--brand-text)]">{cls.zoomDetails.passcode}</span>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-600 dark:text-amber-400">
+                        Meeting link pending configuration
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-2 border-t border-[var(--brand-border)]/50 flex items-center justify-between gap-2">
+                    {hasZoom ? (
+                      <a
+                        href={cls.zoomDetails.meetingUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-sm transition-colors"
+                      >
+                        <Video className="w-3.5 h-3.5" />
+                        <span>Launch Zoom Meeting</span>
+                        <ExternalLink className="w-3 h-3 ml-0.5 opacity-80" />
+                      </a>
+                    ) : (
+                      <Link
+                        href="/admin/classes"
+                        className="w-full inline-flex items-center justify-center gap-1 px-3 py-2 rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--brand-border)] hover:bg-blue-500/10 text-xs font-semibold text-[var(--brand-text)] transition-colors"
+                      >
+                        <span>Configure in Classes</span>
+                      </Link>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Recent Courses Section */}

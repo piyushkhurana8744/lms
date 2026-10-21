@@ -140,6 +140,8 @@ export default function InstructorClassPage({ params }: { params: { classId: str
   const [meetingHistory, setMeetingHistory] = useState<Array<{ _id: string; provider: string; status: string; activatedAt: string }>>([]);
   const [providerMetadata, setProviderMetadata] = useState<IProviderMetadataDTO[]>([]);
   const [providerConnections, setProviderConnections] = useState<IIntegrationConnectionDTO[]>([]);
+  const [recordings, setRecordings] = useState<any[]>([]);
+  const [autoRecord, setAutoRecord] = useState(false);
 
   // Filter & Search states
   const [searchQuery, setSearchQuery] = useState('');
@@ -179,6 +181,12 @@ export default function InstructorClassPage({ params }: { params: { classId: str
 
   useEffect(() => { void fetchMeeting(); }, [fetchMeeting]);
 
+  const fetchRecordings = useCallback(async () => {
+    const response = await fetch(`/api/v1/integrations/classes/${params.classId}/recordings`);
+    if (response.ok) setRecordings((await response.json()).data || []);
+  }, [params.classId]);
+  useEffect(() => { void fetchRecordings(); }, [fetchRecordings]);
+
   useEffect(() => {
     Promise.all([fetch('/api/v1/integrations/providers'), fetch('/api/v1/integrations/connections')])
       .then(async ([providers, connections]) => {
@@ -203,7 +211,7 @@ export default function InstructorClassPage({ params }: { params: { classId: str
       const suffix = action === 'create' ? '' : `/${action}`;
       const res = await fetch(`/api/v1/integrations/classes/${params.classId}/meeting${suffix}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(action === 'create' ? { provider: meetingProvider } : action === 'cancel' ? { reason: 'Instructor cancelled meeting' } : {})
+        body: JSON.stringify(action === 'create' ? { provider: meetingProvider, autoRecord: meetingProvider === 'ZOOM' && autoRecord } : action === 'cancel' ? { reason: 'Instructor cancelled meeting' } : {})
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error?.message || json.message || `Meeting ${action} failed`);
@@ -552,10 +560,16 @@ export default function InstructorClassPage({ params }: { params: { classId: str
           <Button variant="outline" disabled={meetingLoading || !meeting || isCancelled} onClick={() => runMeetingAction('reschedule')}>Reschedule Meeting</Button>
           <Button variant="outline" disabled={meetingLoading || !meeting} onClick={() => runMeetingAction('cancel')}>Cancel Meeting</Button>
         </div>
+        {meetingProvider === 'ZOOM' && <label className="flex items-start gap-2 text-sm rounded-xl border p-3"><input type="checkbox" checked={autoRecord} onChange={(event) => setAutoRecord(event.target.checked)} className="mt-1"/><span><strong>Automatic Zoom cloud recording</strong><span className="block text-xs text-muted-foreground">Requires a licensed host, recording scope, enabled Zoom policy, and participant notice. Availability begins only after Zoom finishes processing.</span></span></label>}
         <div data-testid="meeting-history" className="space-y-1 text-xs text-muted-foreground">
           <div className="font-semibold text-foreground">Meeting history</div>
           {meetingHistory.length ? meetingHistory.map((item) => <div key={item._id}>{item.provider} · {item.status} · {new Date(item.activatedAt).toLocaleString()}</div>) : <div>No provider history yet</div>}
         </div>
+      </section>
+
+      <section className="rounded-2xl border bg-card p-5 space-y-3 shadow-sm">
+        <div className="flex items-center justify-between"><div><h2 className="font-bold">Class recording</h2><p className="text-xs text-muted-foreground">Durable Zoom processing status and authorized playback.</p></div><Button variant="outline" size="sm" onClick={async () => { await fetch(`/api/v1/integrations/classes/${params.classId}/recordings/retry`, { method: 'POST' }); await fetchRecordings(); }}>Resync</Button></div>
+        {!recordings.length ? <p className="text-sm text-muted-foreground">Recording is not enabled or no recording lifecycle exists yet.</p> : recordings.map((recording) => <div key={recording.id} className="rounded-xl border p-3 space-y-2"><div className="flex justify-between gap-2"><span className="font-semibold">{String(recording.state).replaceAll('_', ' ')}</span><span className="text-xs text-muted-foreground">Attempt {recording.attempts || 0}</span></div>{recording.errorMessage && <p className="text-xs text-amber-700">{recording.errorMessage}</p>}<div className="flex flex-wrap gap-2">{recording.files?.filter((file:any) => file.playable).map((file:any) => <a key={file.id} className="text-xs font-bold underline" href={`/api/v1/integrations/recordings/${recording.id}/files/${file.id}/play`}>Play {file.fileType}</a>)}</div></div>)}
       </section>
 
       {/* Attendance Workspace Section */}

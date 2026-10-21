@@ -10,6 +10,7 @@ import { IntegrationProviderRegistry } from '../services/integrations/registry/p
 import { IntegrationProvider } from '@edtech/types';
 import { BranchActor } from '../services/branchAccess.service';
 import { IntegrationOperationModel } from '@edtech/database';
+import { ZoomRecordingService } from '../services/integrations/orchestration/zoomRecording.service';
 
 const actor = (req: Request): BranchActor => {
   const user = (req as AuthenticatedRequest).user;
@@ -57,7 +58,12 @@ export class IntegrationsController {
       .then((d) => {
         return res.redirect(303, `${webUrl}/admin/settings/integrations?oauth=success&provider=${encodeURIComponent(d.provider)}`);
       })
-      .catch(() => res.redirect(303, `${webUrl}/admin/settings/integrations?oauth=error&provider=${encodeURIComponent(provider)}&code=AUTHORIZATION_FAILED`));
+      .catch((err) => {
+        console.error(`[OAuth Callback Error] ${provider} callback failed (${err?.code || 'AUTHORIZATION_FAILED'})`);
+        const allowedCodes = new Set(['ERR_BAD_REQUEST', 'ERR_UNAUTHORIZED', 'AUTH_REQUIRED', 'PERMISSION_DENIED']);
+        const code = encodeURIComponent(allowedCodes.has(err?.code) ? err.code : 'AUTHORIZATION_FAILED');
+        return res.redirect(303, `${webUrl}/admin/settings/integrations?oauth=error&provider=${encodeURIComponent(provider)}&code=${code}`);
+      });
   }
 
   static directConnect(req: Request, res: Response, next: NextFunction) {
@@ -185,6 +191,22 @@ export class IntegrationsController {
   static getRecordings(req: Request, res: Response, next: NextFunction) {
     LiveClassOrchestratorService.getRecordings(tenant(), String(req.params.classId), actor(req))
       .then((d) => ok(res, d))
+      .catch(next);
+  }
+
+  static retryRecording(req: Request, res: Response, next: NextFunction) {
+    ZoomRecordingService.retry(tenant(), String(req.params.classId), actor(req))
+      .then((d) => ok(res, d))
+      .catch(next);
+  }
+
+  static listRecordingLibrary(req: Request, res: Response, next: NextFunction) {
+    ZoomRecordingService.listLibrary(tenant(), actor(req)).then((d) => ok(res, d)).catch(next);
+  }
+
+  static playRecording(req: Request, res: Response, next: NextFunction) {
+    ZoomRecordingService.playback(tenant(), String(req.params.recordingId), String(req.params.fileId), actor(req))
+      .then((url) => res.redirect(303, url))
       .catch(next);
   }
 

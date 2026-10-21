@@ -896,7 +896,7 @@ export const ClassClassroomDetailsSchema = z.object({
 }).optional();
 
 export const ClassZoomDetailsSchema = z.object({
-  meetingUrl: z.string().trim().url('Invalid Zoom meeting URL'),
+  meetingUrl: z.union([z.string().trim().url('Invalid Zoom meeting URL'), z.literal('')]).optional(),
   meetingId: z.string().trim().optional(),
   passcode: z.string().trim().optional(),
   hostUrl: z.string().trim().optional(),
@@ -1746,7 +1746,8 @@ export const CreateClassMeetingSchema = z.object({
   connectionId: z.string().regex(/^[a-f\d]{24}$/i).optional(),
   topic: z.string().max(200).optional(),
   agenda: z.string().max(1000).optional(),
-  password: z.string().max(50).optional()
+  password: z.string().max(50).optional(),
+  autoRecord: z.boolean().optional().default(false)
 }).strip();
 
 export const RescheduleClassMeetingSchema = z.object({

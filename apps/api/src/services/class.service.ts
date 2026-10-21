@@ -4,8 +4,10 @@ import {
   IClassDocument,
   UserModel,
   CourseModel,
-  AuditLogModel
+  AuditLogModel,
+  IntegrationConnectionModel
 } from '@edtech/database';
+import { LiveClassOrchestratorService } from './integrations/orchestration/liveClassOrchestrator.service';
 import {
   CreateClassSchema,
   UpdateClassSchema,
@@ -96,7 +98,15 @@ export class ClassService {
       timing: doc.timing,
       daysOfWeek: doc.daysOfWeek || [],
       showOnWebsite: doc.showOnWebsite ?? true,
-      zoomDetails: doc.zoomDetails,
+      // Host start URLs and raw meeting passcodes are intentionally never part
+      // of the generic class DTO. Hosts obtain startUrl through the authorized
+      // integration join endpoint; students use the provider join URL.
+      zoomDetails: doc.zoomDetails ? {
+        meetingUrl: doc.zoomDetails.meetingUrl,
+        meetingId: doc.zoomDetails.meetingId,
+        instructions: doc.zoomDetails.instructions,
+        autoRecord: Boolean(doc.zoomDetails.autoRecord)
+      } : undefined,
       classroomDetails: doc.classroomDetails,
       notes: doc.notes,
       createdAt: doc.createdAt,
@@ -110,6 +120,32 @@ export class ClassService {
   public static async createClass(rawPayload: unknown): Promise<IClass> {
     const tenantId = this.getTenantId();
     const payload = CreateClassSchema.parse(rawPayload);
+    const shouldProvisionZoom =
+      (payload.mode === 'ONLINE' || payload.mode === 'HYBRID') &&
+      !payload.zoomDetails?.meetingUrl;
+
+    let provisioningActor: { userId: string; roles: string[]; isSuperAdmin: boolean } | undefined;
+    if (shouldProvisionZoom) {
+      const ctx = getWorkspaceContext();
+      if (!ctx?.currentUserId) {
+        throw new BadRequestError('Authenticated user context is required to provision a Zoom meeting');
+      }
+      provisioningActor = { userId: ctx.currentUserId, roles: ['ADMIN'], isSuperAdmin: true };
+      const connectedZoom = await IntegrationConnectionModel.exists({
+        tenantId: new Types.ObjectId(tenantId),
+        provider: 'ZOOM',
+        status: 'CONNECTED',
+        $or: [
+          { scopeType: 'TENANT' },
+          { scopeType: 'USER', userId: new Types.ObjectId(ctx.currentUserId) }
+        ]
+      });
+      if (!connectedZoom) {
+        throw new BadRequestError(
+          'Zoom is not connected. Connect a Zoom account in Admin Settings → Integrations, then save the class again.'
+        );
+      }
+    }
 
     // Auto-generate code if absent
     let classCode = payload.classCode?.trim().toUpperCase();
@@ -145,6 +181,19 @@ export class ClassService {
       classroomDetails: payload.mode === 'OFFLINE' || payload.mode === 'HYBRID' ? payload.classroomDetails : undefined,
       notes: payload.notes?.trim()
     });
+
+    if (shouldProvisionZoom && provisioningActor) {
+      await LiveClassOrchestratorService.createMeetingForClass(
+        tenantId,
+        doc._id.toString(),
+        {
+          provider: 'ZOOM',
+          topic: doc.name,
+          autoRecord: payload.zoomDetails?.autoRecord || false
+        },
+        provisioningActor
+      );
+    }
 
     try {
       await AuditLogModel.create({
@@ -368,6 +417,28 @@ export class ClassService {
     }
 
     await existing.save();
+
+    const shouldProvisionZoom =
+      (existing.mode === 'ONLINE' || existing.mode === 'HYBRID') &&
+      payload.zoomDetails !== undefined &&
+      !payload.zoomDetails.meetingUrl;
+
+    if (shouldProvisionZoom) {
+      const ctx = getWorkspaceContext();
+      if (!ctx?.currentUserId) {
+        throw new BadRequestError('Authenticated user context is required to provision a Zoom meeting');
+      }
+      await LiveClassOrchestratorService.createMeetingForClass(
+        tenantId,
+        existing._id.toString(),
+        {
+          provider: 'ZOOM',
+          topic: existing.name,
+          autoRecord: payload.zoomDetails?.autoRecord || false
+        },
+        { userId: ctx.currentUserId, roles: ['ADMIN'], isSuperAdmin: true }
+      );
+    }
 
     const updated = await ClassModel.findById(existing._id)
       .populate('courseId', 'title slug thumbnailUrl')

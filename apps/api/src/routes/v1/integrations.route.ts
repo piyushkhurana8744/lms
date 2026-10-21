@@ -252,6 +252,36 @@ router.get(
   IntegrationsController.getRecordings
 );
 
+router.post(
+  '/classes/:classId/recordings/retry',
+  requireAnyPermission([
+    PERMISSIONS.INTEGRATIONS_LIVE_CLASSES_MANAGE,
+    PERMISSIONS.CLASS_UPDATE,
+    PERMISSIONS.SUPERADMIN_ALL
+  ]),
+  IntegrationsController.retryRecording
+);
+
+router.get(
+  '/recordings/:recordingId/files/:fileId/play',
+  requireAnyPermission([
+    PERMISSIONS.CLASS_VIEW,
+    PERMISSIONS.COURSE_VIEW,
+    PERMISSIONS.SUPERADMIN_ALL
+  ]),
+  IntegrationsController.playRecording
+);
+
+router.get(
+  '/recordings',
+  requireAnyPermission([
+    PERMISSIONS.CLASS_VIEW,
+    PERMISSIONS.COURSE_VIEW,
+    PERMISSIONS.SUPERADMIN_ALL
+  ]),
+  IntegrationsController.listRecordingLibrary
+);
+
 router.get(
   '/classes/:classId/transcripts',
   requireAnyPermission([

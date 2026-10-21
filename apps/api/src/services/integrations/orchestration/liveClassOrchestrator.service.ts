@@ -38,6 +38,8 @@ import { IntegrationProviderRegistry } from '../registry/providerRegistry.servic
 import { IntegrationOperationService } from './integrationOperation.service';
 import { DomainEventService } from '../../domainEvent.service';
 import crypto from 'crypto';
+import { ZoomRecordingService } from './zoomRecording.service';
+import { ZoomAdapter } from '../adapters/zoom.adapter';
 
 export class LiveClassOrchestratorService {
   public static toDTO(doc: IExternalMeetingDocument): IExternalMeetingDTO {
@@ -153,6 +155,11 @@ export class LiveClassOrchestratorService {
     }
 
     const providerAdapter = IntegrationProviderRegistry.getLiveMeetingProvider(input.provider);
+    if (input.provider === 'ZOOM' && input.autoRecord) {
+      const zoom = providerAdapter as ZoomAdapter;
+      const capability = await zoom.getRecordingCapability(connection);
+      if (capability.state !== 'READY') throw new ConflictError(capability.message);
+    }
     const priorAssociation = await ExternalMeetingModel.findOne({ tenantId, classId: cls._id });
 
     // 3. Execute with durable idempotency
@@ -184,7 +191,8 @@ export class LiveClassOrchestratorService {
           endTime: cls.scheduledEndAt || cls.endDate || new Date(),
           timezone: cls.timezone || 'UTC',
           organizerUserId: actor.userId,
-          password: input.password
+          password: input.password,
+          autoRecord: input.autoRecord
         });
         return { result, externalResourceId: result.externalMeetingId };
       }
@@ -237,6 +245,21 @@ export class LiveClassOrchestratorService {
       externalMeeting = await ExternalMeetingModel.findOne({ _id: mappingId, tenantId, classId: cls._id });
     }
     if (!externalMeeting) throw new Error('Failed to persist external meeting mapping');
+
+    // Keep the canonical class projection in sync so every existing admin,
+    // instructor, and student class view receives the provisioned Zoom data.
+    if (input.provider === 'ZOOM') {
+      cls.zoomDetails = {
+        meetingUrl: meetingResult.joinUrl,
+        meetingId: meetingResult.externalMeetingId,
+        passcode: meetingResult.password || cls.zoomDetails?.passcode || '',
+        hostUrl: meetingResult.hostUrl || cls.zoomDetails?.hostUrl || '',
+        instructions: cls.zoomDetails?.instructions || 'Please join on time via Zoom.',
+        autoRecord: input.autoRecord ?? cls.zoomDetails?.autoRecord ?? false
+      };
+      await cls.save();
+    }
+    if (input.provider === 'ZOOM') await ZoomRecordingService.initializeForMeeting(tenantId, classId, Boolean(input.autoRecord));
 
     const historyIdentity = {
       tenantId: new Types.ObjectId(tenantId), classId: cls._id,
@@ -618,21 +641,8 @@ export class LiveClassOrchestratorService {
     tenantId: string,
     classId: string,
     actor: BranchActor
-  ): Promise<RecordingMetadataItem[]> {
-    const cls = await ClassModel.findOne({ _id: classId, tenantId });
-    if (!cls) throw new NotFoundError('Class not found');
-
-    const externalMeeting = await ExternalMeetingModel.findOne({ tenantId, classId });
-    if (!externalMeeting) return [];
-
-    const connection = await IntegrationConnectionModel.findOne({
-      _id: externalMeeting.connectionId,
-      tenantId
-    });
-    if (!connection) return [];
-
-    const adapter = IntegrationProviderRegistry.getLiveMeetingProvider(externalMeeting.provider);
-    return adapter.getRecordings(connection, externalMeeting.externalMeetingId);
+  ): Promise<any[]> {
+    return ZoomRecordingService.listForClass(tenantId, classId, actor);
   }
 
   public static async getTranscripts(

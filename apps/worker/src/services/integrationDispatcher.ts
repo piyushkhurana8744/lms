@@ -1,7 +1,19 @@
 import { Queue } from 'bullmq';
-import { IntegrationOperationModel } from '@edtech/database';
+import { IntegrationOperationModel, LiveClassRecordingModel } from '@edtech/database';
 
 export async function enqueuePendingIntegrationOperations(queue: Queue): Promise<number> {
+  const dueRecordings = await LiveClassRecordingModel.find({
+    state: { $in: ['AWAITING_PROCESSING', 'PROCESSING', 'FAILED_RETRYABLE'] },
+    nextRetryAt: { $lte: new Date() }
+  }).setOptions({ bypassTenantFilter: true }).limit(100);
+  for (const recording of dueRecordings) {
+    const slot = Math.floor(Date.now() / 60_000);
+    await IntegrationOperationModel.findOneAndUpdate(
+      { idempotencyKey: `SYNC_RECORDING:${recording._id}:${recording.stateVersion}:${slot}` },
+      { $setOnInsert: { tenantId: recording.tenantId, provider: 'ZOOM', connectionId: recording.connectionId, operationType: 'SYNC_RECORDING', canonicalResourceType: 'LiveClassRecording', canonicalResourceId: recording._id.toString(), status: 'PENDING', attempts: 0, payload: { reason: 'scheduled-reconciliation' }, correlationId: `zoom-recording-${recording._id}-${slot}` } },
+      { upsert: true, setDefaultsOnInsert: true }
+    ).setOptions({ bypassTenantFilter: true });
+  }
   const staleBefore = new Date(Date.now() - 2 * 60_000);
   await IntegrationOperationModel.updateMany(
     { status: 'PROCESSING', startedAt: { $lte: staleBefore } },
@@ -20,5 +32,5 @@ export async function enqueuePendingIntegrationOperations(queue: Queue): Promise
       backoff: { type: 'exponential', delay: 1_000 }, removeOnComplete: 1000, removeOnFail: false
     });
   }
-  return due.length;
+  return due.length + dueRecordings.length;
 }

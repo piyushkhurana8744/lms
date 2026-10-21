@@ -175,22 +175,35 @@ export class IntegrationConnectionService {
     else body.set('client_secret', config.clientSecret);
     const tokenResponse = await fetch(tokenUrl, { method: 'POST', headers, body });
     const tokens: any = await tokenResponse.json().catch(() => ({}));
-    if (!tokenResponse.ok || !tokens.access_token) throw new UnauthorizedError(`OAuth token exchange failed (${tokenResponse.status})`);
+    if (!tokenResponse.ok || !tokens.access_token) {
+      console.error(`[OAuth Token Exchange Error] ${statePayload.provider} returned HTTP ${tokenResponse.status}`);
+      const detail = tokens.reason || tokens.error_description || tokens.error || `HTTP ${tokenResponse.status}`;
+      throw new UnauthorizedError(`OAuth token exchange failed: ${detail}`);
+    }
     const identityUrl = statePayload.provider === 'ZOOM' ? 'https://api.zoom.us/v2/users/me'
       : statePayload.provider === 'MICROSOFT_TEAMS' ? 'https://graph.microsoft.com/v1.0/me?$select=id,mail,userPrincipalName,displayName'
       : 'https://openidconnect.googleapis.com/v1/userinfo';
     const identityResponse = await fetch(identityUrl, { headers: { Authorization: `Bearer ${tokens.access_token}`, Accept: 'application/json' } });
     const identity: any = await identityResponse.json().catch(() => ({}));
-    if (!identityResponse.ok) throw new UnauthorizedError(`OAuth identity lookup failed (${identityResponse.status})`);
-    const accountEmail = identity.email || identity.mail || identity.userPrincipalName;
+    if (!identityResponse.ok) {
+      if (statePayload.provider === 'ZOOM') {
+        console.warn(`[Zoom OAuth Identity Lookup Warning] User info skipped (HTTP ${identityResponse.status})`);
+      } else {
+        console.error(`[OAuth Identity Lookup Error] ${statePayload.provider} returned HTTP ${identityResponse.status}`);
+        const detail = identity.message || `HTTP ${identityResponse.status}`;
+        throw new UnauthorizedError(`OAuth identity lookup failed: ${detail}`);
+      }
+    }
+    const rawAccountEmail = identity?.email || identity?.mail || identity?.userPrincipalName;
+    const accountEmail = (typeof rawAccountEmail === 'string' && rawAccountEmail.includes('@')) ? rawAccountEmail : undefined;
     const credentials = { accessToken: tokens.access_token, refreshToken: tokens.refresh_token, clientId: config.clientId, clientSecret: config.clientSecret, accountEmail };
 
     return tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: statePayload.userId, isPlatformContext: false, allowedTenantIds: [tenantId] }, async () => {
       const connection = await this.connectOrUpdate(tenantId, statePayload.provider, {
         scopeType: statePayload.scopeType, branchId: statePayload.branchId || undefined, credentials
       }, { userId: statePayload.userId });
-      connection.externalAccountId = identity.id || identity.sub || accountEmail;
-      connection.externalTenantId = identity.account_id || identity.tid || undefined;
+      connection.externalAccountId = identity?.id || identity?.sub || accountEmail || connection.externalAccountId || 'zoom_authorized_account';
+      connection.externalTenantId = identity?.account_id || identity?.tid || connection.externalTenantId || undefined;
       connection.scopes = String(tokens.scope || config.scopes.join(' ')).split(' ').filter(Boolean);
       // Zoom's current app builder can return granular endpoint scopes instead
       // of legacy macro names, so capability verification is performed by its
@@ -201,7 +214,7 @@ export class IntegrationConnectionService {
         : config.scopes.filter(scope => !connection.scopes.includes(scope));
       connection.status = missingScopes.length ? 'MISSING_SCOPE' : 'CONNECTED';
       connection.expiresAt = new Date(Date.now() + Number(tokens.expires_in || 3600) * 1000);
-      connection.metadata = { ...(connection.metadata || {}), accountEmail, displayName: identity.display_name || identity.displayName || identity.name, missingScopes };
+      connection.metadata = { ...(connection.metadata || {}), accountEmail, displayName: identity?.display_name || identity?.displayName || identity?.name || 'Zoom Host Account', missingScopes };
       await connection.save();
       return this.toDTO(connection);
     });

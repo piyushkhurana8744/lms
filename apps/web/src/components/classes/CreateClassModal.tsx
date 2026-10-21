@@ -67,6 +67,7 @@ export function CreateClassModal({
   const [zoomHostUrl, setZoomHostUrl] = useState(initialData?.zoomDetails?.hostUrl || '');
   const [zoomInstructions, setZoomInstructions] = useState(initialData?.zoomDetails?.instructions || '');
   const [zoomAutoRecord, setZoomAutoRecord] = useState(initialData?.zoomDetails?.autoRecord || false);
+  const [isAutoZoom, setIsAutoZoom] = useState(!initialData?.zoomDetails?.meetingUrl);
 
   // Offline Classroom Details
   const [branch, setBranch] = useState(initialData?.classroomDetails?.branch || 'Noida Center');
@@ -138,7 +139,7 @@ export function CreateClassModal({
       if (!startDate) throw new Error('Start date is required');
       if (selectedDays.length === 0) throw new Error('Select at least one day for class schedule');
 
-      if ((mode === 'ONLINE' || mode === 'HYBRID') && !zoomUrl.trim()) {
+      if ((mode === 'ONLINE' || mode === 'HYBRID') && !isAutoZoom && !zoomUrl.trim()) {
         throw new Error('Zoom meeting URL is required for online classes');
       }
 
@@ -167,14 +168,20 @@ export function CreateClassModal({
       };
 
       if (mode === 'ONLINE' || mode === 'HYBRID') {
-        payload.zoomDetails = {
-          meetingUrl: zoomUrl.trim(),
-          meetingId: zoomId.trim() || undefined,
-          passcode: zoomPasscode.trim() || undefined,
-          hostUrl: zoomHostUrl.trim() || undefined,
-          instructions: zoomInstructions.trim() || undefined,
-          autoRecord: zoomAutoRecord
-        };
+        payload.zoomDetails = isAutoZoom
+          ? {
+              meetingUrl: '',
+              instructions: zoomInstructions.trim() || undefined,
+              autoRecord: zoomAutoRecord
+            }
+          : {
+              meetingUrl: zoomUrl.trim(),
+              meetingId: zoomId.trim() || undefined,
+              passcode: zoomPasscode.trim() || undefined,
+              hostUrl: zoomHostUrl.trim() || undefined,
+              instructions: zoomInstructions.trim() || undefined,
+              autoRecord: zoomAutoRecord
+            };
       }
 
       if (mode === 'OFFLINE' || mode === 'HYBRID') {
@@ -384,60 +391,147 @@ export function CreateClassModal({
 
           {/* 4. Mode Specific Configuration */}
           {(mode === 'ONLINE' || mode === 'HYBRID') && (
-            <div className="p-4 rounded-2xl bg-blue-500/5 border border-blue-500/20 space-y-3">
-              <div className="flex items-center justify-between border-b border-blue-500/20 pb-2">
+            <div className="p-4 rounded-2xl bg-blue-500/5 border border-blue-500/20 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-500/20 pb-3">
                 <div className="flex items-center gap-2 font-bold text-xs text-blue-600 dark:text-blue-400">
                   <Video className="w-4 h-4" />
-                  <span>Zoom Meeting Room Integration</span>
+                  <span>Zoom Meeting Room Configuration</span>
                 </div>
-                <span className="text-[10px] font-mono text-blue-500">Live Interactive Class</span>
+
+                {/* Mode Selector Toggle: Auto vs Manual */}
+                <div className="flex items-center gap-1 bg-[var(--bg-surface)] p-1 rounded-xl border border-[var(--brand-border)] text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setIsAutoZoom(true)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-medium transition-all text-xs ${
+                      isAutoZoom
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-[var(--text-muted)] hover:text-[var(--brand-text)]'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Auto-Create (Zoom)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsAutoZoom(false)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg font-medium transition-all text-xs ${
+                      !isAutoZoom
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-[var(--text-muted)] hover:text-[var(--brand-text)]'
+                    }`}
+                  >
+                    <span>Manual Entry</span>
+                  </button>
+                </div>
               </div>
+
+              {isAutoZoom ? (
+                <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-xs space-y-1.5">
+                  <div className="font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                    <span>Auto-Fill Zoom Meeting Mode Active</span>
+                  </div>
+                  <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
+                    Meeting details automatically generate hongi aapke connected Zoom account se. Jaise hi aap <strong className="text-[var(--brand-text)]">&quot;Save Class&quot;</strong> karenge, meeting link, ID aur passcode auto-fill hokar class me save ho jayenge.
+                  </p>
+                </div>
+              ) : (
+                <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-700 dark:text-amber-400">
+                  <span>Custom URL Mode: Agar aap kisi aur platform (Google Meet/Teams) ya already created Zoom link daalna chahte hain, toh yahan manually enter karein.</span>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                 <div className="sm:col-span-2 space-y-1">
-                  <label className="font-semibold text-[var(--brand-text)]">
-                    Zoom Meeting URL <span className="text-red-500">*</span>
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="font-semibold text-[var(--brand-text)]">
+                      Zoom Meeting URL
+                    </label>
+                    {isAutoZoom && (
+                      <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20 flex items-center gap-1">
+                        <Lock className="w-2.5 h-2.5" /> Auto-fill on Save
+                      </span>
+                    )}
+                  </div>
                   <input
-                    type="url"
-                    value={zoomUrl}
+                    type="text"
+                    value={isAutoZoom ? '⚡ Auto-generated via Connected Zoom upon saving' : zoomUrl}
                     onChange={(e) => setZoomUrl(e.target.value)}
-                    placeholder="https://zoom.us/j/1234567890?pwd=..."
-                    className="w-full px-3 py-2 rounded-xl bg-[var(--bg-surface)] border border-[var(--brand-border)] text-[var(--brand-text)] focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required={mode === 'ONLINE'}
+                    disabled={isAutoZoom}
+                    placeholder={isAutoZoom ? '⚡ Auto-generated via Connected Zoom upon saving' : 'https://zoom.us/j/...'}
+                    className={`w-full px-3 py-2 rounded-xl border text-[var(--brand-text)] focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                      isAutoZoom
+                        ? 'bg-[var(--bg-muted)] border-blue-500/30 text-blue-600 dark:text-blue-300 font-medium cursor-not-allowed opacity-90 select-none'
+                        : 'bg-[var(--bg-surface)] border-[var(--brand-border)]'
+                    }`}
                   />
                 </div>
 
                 <div className="space-y-1">
-                  <label className="font-semibold text-[var(--brand-text)]">Meeting ID (Optional)</label>
+                  <div className="flex items-center justify-between">
+                    <label className="font-semibold text-[var(--brand-text)]">
+                      Meeting ID
+                    </label>
+                    {isAutoZoom && (
+                      <span className="text-[10px] text-[var(--text-muted)] font-mono">Auto</span>
+                    )}
+                  </div>
                   <input
                     type="text"
-                    value={zoomId}
+                    value={isAutoZoom ? '⚡ Auto-generated' : zoomId}
                     onChange={(e) => setZoomId(e.target.value)}
-                    placeholder="e.g. 842 9912 0031"
-                    className="w-full px-3 py-2 rounded-xl font-mono bg-[var(--bg-surface)] border border-[var(--brand-border)] text-[var(--brand-text)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={isAutoZoom}
+                    placeholder="e.g. 892 4819 0284"
+                    className={`w-full px-3 py-2 rounded-xl font-mono text-[var(--brand-text)] focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                      isAutoZoom
+                        ? 'bg-[var(--bg-muted)] border-blue-500/30 text-blue-600 dark:text-blue-300 font-medium cursor-not-allowed opacity-90 select-none'
+                        : 'bg-[var(--bg-surface)] border-[var(--brand-border)]'
+                    }`}
                   />
                 </div>
 
                 <div className="space-y-1">
-                  <label className="font-semibold text-[var(--brand-text)]">Passcode (Optional)</label>
+                  <div className="flex items-center justify-between">
+                    <label className="font-semibold text-[var(--brand-text)]">
+                      Passcode
+                    </label>
+                    {isAutoZoom && (
+                      <span className="text-[10px] text-[var(--text-muted)] font-mono">Auto</span>
+                    )}
+                  </div>
                   <input
                     type="text"
-                    value={zoomPasscode}
+                    value={isAutoZoom ? '⚡ Auto-generated' : zoomPasscode}
                     onChange={(e) => setZoomPasscode(e.target.value)}
-                    placeholder="e.g. DIDM2024"
-                    className="w-full px-3 py-2 rounded-xl font-mono bg-[var(--bg-surface)] border border-[var(--brand-border)] text-[var(--brand-text)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    disabled={isAutoZoom}
+                    placeholder="e.g. 482910"
+                    className={`w-full px-3 py-2 rounded-xl font-mono text-[var(--brand-text)] focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                      isAutoZoom
+                        ? 'bg-[var(--bg-muted)] border-blue-500/30 text-blue-600 dark:text-blue-300 font-medium cursor-not-allowed opacity-90 select-none'
+                        : 'bg-[var(--bg-surface)] border-[var(--brand-border)]'
+                    }`}
                   />
                 </div>
 
                 <div className="sm:col-span-2 space-y-1">
-                  <label className="font-semibold text-[var(--brand-text)]">Host / Start URL (Optional for Trainer)</label>
+                  <div className="flex items-center justify-between">
+                    <label className="font-semibold text-[var(--brand-text)]">Host / Start URL (Optional for Trainer)</label>
+                    {isAutoZoom && (
+                      <span className="text-[10px] text-[var(--text-muted)] font-mono">Auto for Host</span>
+                    )}
+                  </div>
                   <input
                     type="text"
-                    value={zoomHostUrl}
+                    value={isAutoZoom ? '⚡ Auto-generated for Trainer' : zoomHostUrl}
                     onChange={(e) => setZoomHostUrl(e.target.value)}
+                    disabled={isAutoZoom}
                     placeholder="e.g. Host start link for trainer"
-                    className="w-full px-3 py-2 rounded-xl font-mono text-[11px] bg-[var(--bg-surface)] border border-[var(--brand-border)] text-[var(--brand-text)] focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    className={`w-full px-3 py-2 rounded-xl font-mono text-[11px] text-[var(--brand-text)] focus:outline-none focus:ring-2 focus:ring-blue-500 transition-colors ${
+                      isAutoZoom
+                        ? 'bg-[var(--bg-muted)] border-blue-500/30 text-blue-600 dark:text-blue-300 font-medium cursor-not-allowed opacity-90 select-none'
+                        : 'bg-[var(--bg-surface)] border-[var(--brand-border)]'
+                    }`}
                   />
                 </div>
 
