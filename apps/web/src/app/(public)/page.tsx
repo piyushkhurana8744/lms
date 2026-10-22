@@ -60,9 +60,10 @@ export default function PublicHomePage() {
   // Query public courses
   const { data: coursesData, isLoading, isError, error } = useQuery({
     queryKey: ['public-featured-courses'],
+    meta: { skipGlobalError: true },
     queryFn: async () => {
       const res = await fetch('/api/v1/public/courses?limit=12');
-      if (!res.ok) throw new Error('Failed to fetch courses');
+      if (!res.ok) return [];
       const json = await res.json();
       return json.data || [];
     }

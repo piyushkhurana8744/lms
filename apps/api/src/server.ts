@@ -5,6 +5,7 @@ import { ENV } from './config/env';
 import { connectDatabase, disconnectDatabase } from '@edtech/database';
 import { connectRedis, disconnectRedis } from './config/redis';
 import { corsOptions } from './config/cors';
+import { autoBootstrapInitialTenant } from './config/autoBootstrap';
 import { logger } from '@edtech/utils';
 
 async function bootstrap() {
@@ -34,6 +35,7 @@ async function bootstrap() {
   // 2. Connect Infrastructure (Database & Redis Cache)
   try {
     await connectDatabase(ENV.MONGO_URI);
+    await autoBootstrapInitialTenant();
   } catch (err) {
     logger.error('[API Server] Continuing without immediate MongoDB connection (reconnection pending)...', err);
   }

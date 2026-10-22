@@ -7,10 +7,23 @@ export const corsOptions: CorsOptions = {
     if (!origin) {
       return callback(null, true);
     }
-    if (ENV.CORS_ORIGINS.includes(origin) || ENV.NODE_ENV === 'development') {
+    const domain = (process.env.DOMAIN || '').trim().toLowerCase();
+    const isDomainMatch = Boolean(
+      domain &&
+        (origin === `https://${domain}` ||
+          origin === `http://${domain}` ||
+          origin.endsWith(`.${domain}`))
+    );
+
+    if (
+      ENV.NODE_ENV === 'development' ||
+      ENV.CORS_ORIGINS.includes(origin) ||
+      isDomainMatch ||
+      (process.env.WEB_APP_URL && origin === process.env.WEB_APP_URL.replace(/\/$/, ''))
+    ) {
       return callback(null, true);
     }
-    return callback(new Error(`CORS Policy Violation: Origin '${origin}' is not allowed.`));
+    return callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

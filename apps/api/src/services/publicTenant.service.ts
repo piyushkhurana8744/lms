@@ -163,8 +163,10 @@ export class PublicTenantService {
         }
       }
 
-      // C. Development Fallback
+      // C. Platform Domain / Primary Host / Fallback
       if (!result) {
+        const platformHost = process.env.DOMAIN ? this.normalizeHost(process.env.DOMAIN) : '';
+        const isPlatformHost = Boolean(platformHost && (normalizedHost === platformHost || normalizedHost.endsWith(`.${platformHost}`)));
         const isDevOrTest = process.env.NODE_ENV !== 'production';
         const isLocalHost =
           normalizedHost === 'localhost' ||
@@ -172,26 +174,37 @@ export class PublicTenantService {
           normalizedHost === '::1' ||
           normalizedHost === '0.0.0.0';
 
-        if (isDevOrTest && isLocalHost) {
-          const configuredDefaultTenantId = process.env.PUBLIC_DEFAULT_TENANT_ID;
+        const configuredDefaultTenantId = process.env.PUBLIC_DEFAULT_TENANT_ID;
 
-          if (configuredDefaultTenantId) {
-            const defaultTenant = await TenantModel.findOne({
-              _id: configuredDefaultTenantId,
-              status: 'ACTIVE'
-            }).lean();
+        if (configuredDefaultTenantId) {
+          const defaultTenant = await TenantModel.findOne({
+            _id: configuredDefaultTenantId,
+            status: 'ACTIVE'
+          }).lean();
 
-            if (defaultTenant) {
-              result = { tenant: (defaultTenant as unknown) as ITenantDocument, hostnameType: 'DEVELOPMENT' };
-            }
+          if (defaultTenant) {
+            result = { tenant: (defaultTenant as unknown) as ITenantDocument, hostnameType: 'PLATFORM' };
+          }
+        }
+
+        // If accessing via the primary deployed domain, or local dev, or fallback:
+        if (!result && (isPlatformHost || (isDevOrTest && isLocalHost) || process.env.PUBLIC_DEFAULT_TENANT_SLUG)) {
+          const targetSlug = process.env.PUBLIC_DEFAULT_TENANT_SLUG || 'didm';
+          const tenantBySlug = await TenantModel.findOne({
+            slug: targetSlug,
+            status: 'ACTIVE'
+          }).lean();
+
+          if (tenantBySlug) {
+            result = { tenant: (tenantBySlug as unknown) as ITenantDocument, hostnameType: 'PLATFORM' };
           } else {
-            // Unconfigured dev fallback to first active tenant
+            // First active tenant fallback
             const fallbackTenant = await TenantModel.findOne({ status: 'ACTIVE' })
               .sort({ createdAt: 1 })
               .lean();
 
             if (fallbackTenant) {
-              result = { tenant: (fallbackTenant as unknown) as ITenantDocument, hostnameType: 'DEVELOPMENT' };
+              result = { tenant: (fallbackTenant as unknown) as ITenantDocument, hostnameType: 'PLATFORM' };
             }
           }
         }
