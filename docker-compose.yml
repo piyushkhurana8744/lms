@@ -1,21 +1,37 @@
+# Shared veblika-edge packaging — LMS platform.
+# Coexists with other stacks on the same host via shared edge-network.
+# GATEWAY_ALIAS is injected by the master-panel deploy orchestrator.
+#
+# Host port map (published by the internal nginx gateway on edge-network):
+#   lms-api      → internal :4000 (not published to host)
+#   lms-web      → internal :3000 (not published to host)
+#   lms-worker   → internal only (no HTTP)
+#   gateway      → edge-network (veblika-edge proxies HTTPS via GATEWAY_ALIAS)
+#
+# MongoDB replica-set is required for transactions / change-streams.
+
+name: lms
+
 services:
+  # ── MongoDB (replica-set for transactions) ───────────────────────────────────
   mongodb:
     image: mongo:${MONGO_VERSION:-7.0}
-    container_name: didm-lms-mongodb
-    restart: always
-    ports:
-      - '${MONGO_PORT:-27017}:27017'
-    command: ['mongod', '--replSet', 'rs0', '--bind_ip_all']
+    container_name: lms-mongodb
+    restart: unless-stopped
+    command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--wiredTigerCacheSizeGB', '1']
     environment:
       MONGO_INITDB_DATABASE: edtech_lms
     volumes:
-      - mongo_data:/data/db
+      - lms-mongo:/data/db
+    networks: [internal]
     healthcheck:
-      test: ['CMD', 'mongosh', '--quiet', '--eval', 'db.adminCommand({ ping: 1 }).ok']
-      interval: 5s
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 15s
       timeout: 5s
       retries: 20
+      start_period: 20s
 
+  # One-shot: initialise replica-set on first boot, no-op on subsequent restarts.
   mongo-replica-init:
     image: mongo:${MONGO_VERSION:-7.0}
     restart: 'no'
@@ -28,71 +44,123 @@ services:
       - |
         mongosh --host mongodb:27017 --quiet --eval '
           try { rs.status() }
-          catch (error) {
+          catch (_) {
             rs.initiate({_id:"rs0",members:[{_id:0,host:"mongodb:27017"}]})
           }
         '
+    networks: [internal]
 
+  # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
-    image: redis:${REDIS_VERSION:-7.2-alpine}
-    container_name: didm-lms-redis
-    restart: always
-    ports:
-      - '${REDIS_PORT:-6379}:6379'
+    image: redis:${REDIS_VERSION:-7-alpine}
+    container_name: lms-redis
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
     volumes:
-      - redis_data:/data
+      - lms-redis:/data
+    networks: [internal]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
+  # ── API ──────────────────────────────────────────────────────────────────────
   api:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    container_name: didm-lms-api
-    restart: always
-    ports:
-      - '4000:4000'
-    environment:
-      NODE_ENV: development
-      PORT: 4000
+    container_name: lms-api
+    restart: unless-stopped
+    env_file: [.env]
+    environment: &lms-env
+      NODE_ENV: production
+      PORT: '4000'
       MONGO_URI: mongodb://mongodb:27017/edtech_lms?replicaSet=rs0
       REDIS_URL: redis://redis:6379
-      CORS_ORIGINS: http://localhost:3000
-      INTERNAL_WORKER_SECRET: development-worker-secret
+      API_INTERNAL_URL: http://api:4000
+      # API_PUBLIC_URL and WEB_APP_URL must be set in .env to your HTTPS domain.
+      # CORS_ORIGINS must include the web domain; set in .env.
+    expose: ['4000']
     depends_on:
       mongo-replica-init:
         condition: service_completed_successfully
       redis:
-        condition: service_started
+        condition: service_healthy
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    networks:
+      internal:
+        aliases:
+          - ${GATEWAY_ALIAS:-lms-gateway}-api
 
+  # ── Background Worker ─────────────────────────────────────────────────────────
   worker:
     build:
       context: .
       dockerfile: apps/worker/Dockerfile
-    container_name: didm-lms-worker
-    restart: always
+    container_name: lms-worker
+    restart: unless-stopped
+    env_file: [.env]
     environment:
-      NODE_ENV: development
-      MONGO_URI: mongodb://mongodb:27017/edtech_lms?replicaSet=rs0
-      REDIS_URL: redis://redis:6379
-      INTERNAL_WORKER_SECRET: development-worker-secret
-      API_INTERNAL_URL: http://api:4000
+      <<: *lms-env
     depends_on:
-      - redis
-      - mongodb
+      mongo-replica-init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    networks: [internal]
 
+  # ── Next.js Web ──────────────────────────────────────────────────────────────
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    container_name: didm-lms-web
-    restart: always
-    ports:
-      - '3000:3000'
+    container_name: lms-web
+    restart: unless-stopped
+    env_file: [.env]
     environment:
-      NODE_ENV: development
-      NEXT_PUBLIC_API_URL: http://localhost:4000
+      NODE_ENV: production
+      PORT: '3000'
+      HOSTNAME: '0.0.0.0'
+      # NEXT_PUBLIC_API_URL is intentionally empty in production:
+      # the gateway routes /api/v1/* → api container directly.
+      NEXT_PUBLIC_API_URL: ''
+    expose: ['3000']
     depends_on:
       - api
+    networks:
+      internal:
+        aliases:
+          - ${GATEWAY_ALIAS:-lms-gateway}-frontend
+
+  # ── Nginx Gateway ─────────────────────────────────────────────────────────────
+  # Sits on edge-network so veblika-edge can reach it by GATEWAY_ALIAS.
+  # Routes: /api/v1/* → api, /socket.io/* → api, /uploads/* → api, / → web.
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: lms-gateway
+    restart: unless-stopped
+    depends_on:
+      - api
+      - web
+    environment:
+      - GATEWAY_ALIAS=${GATEWAY_ALIAS:-lms-gateway}
+    volumes:
+      - ./deploy/nginx/templates/default.conf.template:/etc/nginx/templates/default.conf.template:ro
+    networks:
+      - internal
+      - edge-network
 
 volumes:
-  mongo_data:
-  redis_data:
+  lms-mongo:
+  lms-redis:
+
+networks:
+  internal:
+    driver: bridge
+  edge-network:
+    external: true
