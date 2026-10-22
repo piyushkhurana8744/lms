@@ -1,19 +1,20 @@
-# Shared veblika-edge packaging — LMS platform.
-# Coexists with other stacks on the same host via shared edge-network.
-# GATEWAY_ALIAS is injected by the master-panel deploy orchestrator.
+# Set DOMAIN=lms.bubududuworld.fun in .env — edge-register maps it on veblika-edge
+# and issues Let's Encrypt SSL automatically on docker compose up -d --build.
 #
-# Host port map (published by the internal nginx gateway on edge-network):
-#   lms-api      → internal :4000 (not published to host)
-#   lms-web      → internal :3000 (not published to host)
-#   lms-worker   → internal only (no HTTP)
-#   gateway      → edge-network (veblika-edge proxies HTTPS via GATEWAY_ALIAS)
-#
-# MongoDB replica-set is required for transactions / change-streams.
+# Port map (do not collide with other stacks):
+#   broadcastingengine → 8090
+#   chatbotengine      → 8091
+#   aicallingengine    → 8092
+#   webinarengine      → 8093
+#   dripengine         → 8094
+#   vb-channel-hub     → 8100
+#   creator-growth-ai  → 5011
+#   lms                → 5012
 
 name: lms
 
 services:
-  # ── MongoDB (replica-set for transactions) ───────────────────────────────────
+  # ── MongoDB (replica-set for transactions / change-streams) ──────────────────
   mongodb:
     image: mongo:${MONGO_VERSION:-7.0}
     container_name: lms-mongodb
@@ -23,32 +24,18 @@ services:
       MONGO_INITDB_DATABASE: edtech_lms
     volumes:
       - lms-mongo:/data/db
-    networks: [internal]
+    networks: [lms]
     healthcheck:
-      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
-      interval: 15s
+      test:
+        - CMD-SHELL
+        - >
+          mongosh --quiet --eval
+          "try { const s = rs.status(); if (s.ok && s.myState === 1) { quit(0) } quit(1) }
+          catch (e) { try { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongodb:27017'}]}) } catch (e2) {} quit(1) }"
+      interval: 5s
       timeout: 5s
-      retries: 20
-      start_period: 20s
-
-  # One-shot: initialise replica-set on first boot, no-op on subsequent restarts.
-  mongo-replica-init:
-    image: mongo:${MONGO_VERSION:-7.0}
-    restart: 'no'
-    depends_on:
-      mongodb:
-        condition: service_healthy
-    entrypoint:
-      - bash
-      - -c
-      - |
-        mongosh --host mongodb:27017 --quiet --eval '
-          try { rs.status() }
-          catch (_) {
-            rs.initiate({_id:"rs0",members:[{_id:0,host:"mongodb:27017"}]})
-          }
-        '
-    networks: [internal]
+      retries: 30
+      start_period: 10s
 
   # ── Redis ────────────────────────────────────────────────────────────────────
   redis:
@@ -58,7 +45,7 @@ services:
     command: ['redis-server', '--appendonly', 'yes', '--maxmemory-policy', 'noeviction']
     volumes:
       - lms-redis:/data
-    networks: [internal]
+    networks: [lms]
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
@@ -82,16 +69,13 @@ services:
       API_INTERNAL_URL: http://api:4000
     expose: ['4000']
     depends_on:
-      mongo-replica-init:
-        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
       redis:
         condition: service_healthy
     extra_hosts:
       - 'host.docker.internal:host-gateway'
-    networks:
-      internal:
-        aliases:
-          - ${GATEWAY_ALIAS:-lms-gateway}-api
+    networks: [lms]
 
   # ── Background Worker ─────────────────────────────────────────────────────────
   worker:
@@ -104,15 +88,15 @@ services:
     environment:
       <<: *lms-env
     depends_on:
-      mongo-replica-init:
-        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
       redis:
         condition: service_healthy
     extra_hosts:
       - 'host.docker.internal:host-gateway'
-    networks: [internal]
+    networks: [lms]
 
-  # ── Next.js Web ──────────────────────────────────────────────────────────────
+  # ── Next.js Web ───────────────────────────────────────────────────────────────
   web:
     build:
       context: .
@@ -124,41 +108,56 @@ services:
       NODE_ENV: production
       PORT: '3000'
       HOSTNAME: '0.0.0.0'
-      # NEXT_PUBLIC_API_URL is intentionally empty in production:
-      # the gateway routes /api/v1/* → api container directly.
       NEXT_PUBLIC_API_URL: ''
     expose: ['3000']
     depends_on:
       - api
-    networks:
-      internal:
-        aliases:
-          - ${GATEWAY_ALIAS:-lms-gateway}-frontend
+    networks: [lms]
 
-  # ── Nginx Gateway ─────────────────────────────────────────────────────────────
-  # Sits on edge-network so veblika-edge can reach it by GATEWAY_ALIAS.
-  # Routes: /api/v1/* → api, /socket.io/* → api, /uploads/* → api, / → web.
-  gateway:
+  # ── Nginx (internal router, published on host :5012) ─────────────────────────
+  nginx:
     image: nginx:1.27-alpine
-    container_name: lms-gateway
+    container_name: lms-nginx
     restart: unless-stopped
+    ports:
+      - '${LMS_HOST_PORT:-5012}:80'
+    volumes:
+      - ./deploy/nginx/lms.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - api
       - web
+    networks: [lms]
+
+  # ── Edge Register (auto SSL + domain mapping on veblika-edge) ─────────────────
+  # Runs once on `docker compose up`. Writes nginx vhost to /etc/veblika/edge/tenants/
+  # and issues a Let's Encrypt cert for DOMAIN. Requires DOMAIN set in .env.
+  edge-register:
+    image: docker:27-cli
+    container_name: lms-edge-register
+    env_file: [.env]
     environment:
-      - GATEWAY_ALIAS=${GATEWAY_ALIAS:-lms-gateway}
+      EDGE_DIR: /etc/veblika/edge
+      EDGE_CONTAINER_NAME: ${EDGE_CONTAINER_NAME:-veblika-edge}
+      LMS_HOST_PORT: ${LMS_HOST_PORT:-5012}
     volumes:
-      - ./deploy/nginx/templates/default.conf.template:/etc/nginx/templates/default.conf.template:ro
-    networks:
-      - internal
-      - edge-network
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /etc/veblika/edge:/etc/veblika/edge
+      - /etc/letsencrypt:/etc/letsencrypt
+      - /var/lib/letsencrypt:/var/lib/letsencrypt
+      - /var/www/certbot:/var/www/certbot
+      - /var/www/html:/var/www/html
+      - ./deploy/register-edge-domain.sh:/register-edge-domain.sh:ro
+    entrypoint: ['sh', '/register-edge-domain.sh']
+    depends_on:
+      - nginx
+    restart: 'on-failure'
+    network_mode: host
 
 volumes:
   lms-mongo:
   lms-redis:
 
 networks:
-  internal:
+  lms:
+    name: lms-net
     driver: bridge
-  edge-network:
-    external: true
