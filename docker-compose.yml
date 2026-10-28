@@ -21,7 +21,7 @@ services:
     restart: unless-stopped
     command: ['mongod', '--replSet', 'rs0', '--bind_ip_all', '--wiredTigerCacheSizeGB', '1']
     environment:
-      MONGO_INITDB_DATABASE: edtech_lms
+      MONGO_INITDB_DATABASE: ${MONGO_DB_NAME:-edtech_lms}
     volumes:
       - lms-mongo:/data/db
     networks: [lms]
@@ -64,8 +64,8 @@ services:
     environment: &lms-env
       NODE_ENV: production
       PORT: '4000'
-      MONGO_URI: mongodb://mongodb:27017/edtech_lms?replicaSet=rs0
-      REDIS_URL: redis://redis:6379
+      MONGO_URI: ${MONGO_URI:-mongodb://mongodb:27017/edtech_lms?replicaSet=rs0}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       API_INTERNAL_URL: http://api:4000
     expose: ['4000']
     depends_on:
