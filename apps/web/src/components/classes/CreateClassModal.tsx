@@ -27,6 +27,19 @@ interface CreateClassModalProps {
   initialData?: any;
 }
 
+function toTimeInputValue(value: string | undefined, fallback: string): string {
+  if (!value) return fallback;
+  const normalized = value.trim();
+  if (/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(normalized)) return normalized;
+
+  const twelveHour = normalized.match(/^(\d{1,2}):([0-5]\d)\s*(AM|PM)$/i);
+  if (!twelveHour) return fallback;
+
+  let hours = Number(twelveHour[1]) % 12;
+  if (twelveHour[3].toUpperCase() === 'PM') hours += 12;
+  return `${String(hours).padStart(2, '0')}:${twelveHour[2]}`;
+}
+
 export function CreateClassModal({
   isOpen,
   onClose,
@@ -50,8 +63,12 @@ export function CreateClassModal({
   const [endDate, setEndDate] = useState(
     initialData?.endDate ? new Date(initialData.endDate).toISOString().split('T')[0] : ''
   );
-  const [startTime, setStartTime] = useState(initialData?.timing?.startTime || '10:00 AM');
-  const [endTime, setEndTime] = useState(initialData?.timing?.endTime || '12:00 PM');
+  const [startTime, setStartTime] = useState(
+    toTimeInputValue(initialData?.timing?.startTime, '10:00')
+  );
+  const [endTime, setEndTime] = useState(
+    toTimeInputValue(initialData?.timing?.endTime, '12:00')
+  );
   const [timezone, setTimezone] = useState(initialData?.timing?.timezone || 'Asia/Kolkata');
   const [selectedDays, setSelectedDays] = useState<string[]>(
     initialData?.daysOfWeek || ['Monday', 'Wednesday', 'Friday']
@@ -748,10 +765,10 @@ export function CreateClassModal({
               <div className="space-y-1">
                 <label className="font-bold text-[var(--brand-text)]">Start Time *</label>
                 <input
-                  type="text"
+                  type="time"
                   value={startTime}
                   onChange={(e) => setStartTime(e.target.value)}
-                  placeholder="10:00 AM"
+                  step={300}
                   className="w-full px-3 py-2 rounded-xl font-mono bg-[var(--brand-background)] border border-[var(--brand-border)] text-[var(--brand-text)] focus:outline-none"
                   required
                 />
@@ -760,10 +777,10 @@ export function CreateClassModal({
               <div className="space-y-1">
                 <label className="font-bold text-[var(--brand-text)]">End Time *</label>
                 <input
-                  type="text"
+                  type="time"
                   value={endTime}
                   onChange={(e) => setEndTime(e.target.value)}
-                  placeholder="12:00 PM"
+                  step={300}
                   className="w-full px-3 py-2 rounded-xl font-mono bg-[var(--brand-background)] border border-[var(--brand-border)] text-[var(--brand-text)] focus:outline-none"
                   required
                 />

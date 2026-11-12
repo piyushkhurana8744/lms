@@ -55,6 +55,7 @@ export class PlatformController {
   public static async impersonateUser(req: AuthenticatedRequest, res: Response): Promise<Response> {
     const targetUserId = req.body?.targetUserId || req.params?.userId || req.body?.userId;
     const reason = req.body?.reason;
+    const returnTo = req.body?.returnTo || req.query?.returnTo;
     const ipAddress = req.ip || req.socket.remoteAddress;
     const userAgent = req.get('user-agent');
 
@@ -63,6 +64,7 @@ export class PlatformController {
         targetUserId,
         superAdminUserId: req.user!.userId,
         reason,
+        returnTo,
         originalSessionId: req.sessionId,
         ipAddress,
         userAgent
@@ -74,6 +76,7 @@ export class PlatformController {
         httpOnly: true,
         secure: isProd,
         sameSite: 'lax',
+        path: '/',
         maxAge: 4 * 60 * 60 * 1000 // 4 Hours
       });
 
@@ -81,6 +84,7 @@ export class PlatformController {
         httpOnly: true,
         secure: isProd,
         sameSite: 'lax',
+        path: '/',
         maxAge: 4 * 60 * 60 * 1000
       });
 
@@ -106,6 +110,8 @@ export class PlatformController {
           effectiveUserId: req.user?.userId || null,
           targetTenantId: req.user?.tenantId || null,
           impersonationReason: req.user?.impersonationReason || null,
+          impersonationReturnTo: req.user?.impersonationReturnTo || null,
+          returnTo: req.user?.impersonationReturnTo || null,
           roles: req.user?.roles || [],
           permissions: req.user?.permissions || []
         },
@@ -123,30 +129,38 @@ export class PlatformController {
    */
   public static async exitImpersonation(req: AuthenticatedRequest, res: Response): Promise<Response> {
     try {
+      const returnTo = req.body?.returnTo || req.query?.returnTo;
       const ipAddress = req.ip || req.socket.remoteAddress;
       const userAgent = req.get('user-agent');
 
       const result = await AuthService.exitImpersonation({
         currentSessionId: req.sessionId!,
+        returnTo,
         ipAddress,
         userAgent
       });
 
       const isProd = process.env.NODE_ENV === 'production';
 
-      res.cookie('refreshToken', result.tokens.refreshToken, {
-        httpOnly: true,
-        secure: isProd,
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000
-      });
+      if (result.tokens?.refreshToken) {
+        res.cookie('refreshToken', result.tokens.refreshToken, {
+          httpOnly: true,
+          secure: isProd,
+          sameSite: 'lax',
+          path: '/',
+          maxAge: 7 * 24 * 60 * 60 * 1000
+        });
+      }
 
-      res.cookie('accessToken', result.tokens.accessToken, {
-        httpOnly: true,
-        secure: isProd,
-        sameSite: 'lax',
-        maxAge: 15 * 60 * 1000
-      });
+      if (result.tokens?.accessToken) {
+        res.cookie('accessToken', result.tokens.accessToken, {
+          httpOnly: true,
+          secure: isProd,
+          sameSite: 'lax',
+          path: '/',
+          maxAge: 15 * 60 * 1000
+        });
+      }
 
       return ApiResponse.success(res, result, 'Impersonation ended. SuperAdmin session restored.');
     } catch (error: any) {

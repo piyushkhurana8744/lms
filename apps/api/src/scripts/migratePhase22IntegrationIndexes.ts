@@ -6,6 +6,7 @@ import {
   LiveMeetingAssociationHistoryModel,
   LiveClassRecordingModel
 } from '@edtech/database';
+import { assertMaintenanceSafety } from './maintenanceSafety';
 
 dotenv.config();
 
@@ -44,17 +45,18 @@ async function assertNoDuplicates(check: DuplicateCheck): Promise<void> {
 async function main(): Promise<void> {
   const uri = process.env.MONGO_URI;
   if (!uri) throw new Error('MONGO_URI is required');
+  const maintenance = assertMaintenanceSafety(uri, 'phase22-integration-indexes');
 
   await mongoose.connect(uri, { autoIndex: false, serverSelectionTimeoutMS: 5000 });
   try {
     for (const check of duplicateChecks) await assertNoDuplicates(check);
 
-    await IntegrationOAuthStateModel.collection.createIndexes([
+    if (!maintenance.dryRun) await IntegrationOAuthStateModel.collection.createIndexes([
       { name: 'nonceHash_1', key: { nonceHash: 1 }, unique: true },
       { name: 'expiresAt_1', key: { expiresAt: 1 }, expireAfterSeconds: 0 },
       { name: 'tenantId_1_userId_1_provider_1_createdAt_-1', key: { tenantId: 1, userId: 1, provider: 1, createdAt: -1 } }
     ]);
-    await LiveMeetingAssociationHistoryModel.collection.createIndexes([
+    if (!maintenance.dryRun) await LiveMeetingAssociationHistoryModel.collection.createIndexes([
       {
         name: 'tenantId_1_classId_1_status_1', key: { tenantId: 1, classId: 1, status: 1 }, unique: true,
         partialFilterExpression: { status: 'ACTIVE' }
@@ -64,7 +66,7 @@ async function main(): Promise<void> {
         key: { tenantId: 1, classId: 1, provider: 1, externalMeetingId: 1 }, unique: true
       }
     ]);
-    await IntegrationConnectionModel.collection.createIndexes([
+    if (!maintenance.dryRun) await IntegrationConnectionModel.collection.createIndexes([
       {
         name: 'tenantId_1_provider_1_scopeType_1_userId_1_branchId_1',
         key: { tenantId: 1, provider: 1, scopeType: 1, userId: 1, branchId: 1 }, unique: true
@@ -72,7 +74,7 @@ async function main(): Promise<void> {
       { name: 'tenantId_1_status_1', key: { tenantId: 1, status: 1 } },
       { name: 'tenantId_1_provider_1_status_1', key: { tenantId: 1, provider: 1, status: 1 } }
     ]);
-    await LiveClassRecordingModel.collection.createIndexes([
+    if (!maintenance.dryRun) await LiveClassRecordingModel.collection.createIndexes([
       { name: 'tenantId_1_provider_1_providerMeetingId_1', key: { tenantId: 1, provider: 1, providerMeetingId: 1 }, unique: true },
       { name: 'tenantId_1_classId_1_createdAt_-1', key: { tenantId: 1, classId: 1, createdAt: -1 } },
       { name: 'state_1_nextRetryAt_1', key: { state: 1, nextRetryAt: 1 } }
@@ -91,7 +93,7 @@ async function main(): Promise<void> {
       LiveClassRecordingModel.collection.countDocuments({})
     ]);
     console.log(JSON.stringify({
-      status: 'PHASE_22_INDEXES_READY',
+      status: maintenance.dryRun ? 'PHASE_22_DRY_RUN_OK' : 'PHASE_22_INDEXES_READY', database: maintenance.database,
       collections: {
         integration_oauth_states: { readableRecords: readableCounts[0], indexes: evidence[0].map(({ name }) => name) },
         live_meeting_association_history: { readableRecords: readableCounts[1], indexes: evidence[1].map(({ name }) => name) },

@@ -27,18 +27,40 @@ import { IStudentDashboardSummary } from '@edtech/types';
 import { LiveClassJoinButton } from '@/components/classes/LiveClassJoinButton';
 
 export default function StudentDashboardPage() {
-  const { user } = useAuth();
+  const { user, isLoading: isAuthLoading } = useAuth();
 
   // Fetch comprehensive student dashboard summary
-  const { data: summary, isLoading, isError, error } = useQuery<IStudentDashboardSummary>({
-    queryKey: ['student-dashboard-summary'],
+  const { data: dashboardResult, isLoading } = useQuery<{
+    summary: IStudentDashboardSummary | null;
+    error: string | null;
+  }>({
+    queryKey: ['student-dashboard-summary', user?.id, user?.activeTenantId || user?.tenantId],
+    enabled: !isAuthLoading && Boolean(user),
     queryFn: async () => {
-      const res = await fetch('/api/v1/student/dashboard');
-      if (!res.ok) throw new Error('Failed to load student dashboard');
-      const json = await res.json();
-      return json.data;
-    }
+      try {
+        const res = await fetch('/api/v1/student/dashboard', {
+          headers: { Accept: 'application/json' },
+          cache: 'no-store'
+        });
+        const json = await res.json().catch(() => null);
+        if (!res.ok) {
+          return {
+            summary: null,
+            error: json?.error?.message || `Student dashboard request failed (${res.status})`
+          };
+        }
+        return { summary: json?.data || null, error: null };
+      } catch {
+        return {
+          summary: null,
+          error: 'Student dashboard API is unavailable. Start or restart the API service and try again.'
+        };
+      }
+    },
+    retry: false
   });
+  const summary = dashboardResult?.summary;
+  const loadError = dashboardResult?.error;
 
   const stats = summary?.stats;
   const continueLearning = summary?.continueLearning;
@@ -77,14 +99,14 @@ export default function StudentDashboardPage() {
         </div>
       </div>
 
-      {isLoading ? (
+      {isAuthLoading || isLoading ? (
         <div className="glass-card p-16 text-center text-xs font-mono text-[var(--text-muted)] space-y-3">
           <div className="w-8 h-8 border-3 border-[#BE1E2E] border-t-transparent rounded-full animate-spin mx-auto" />
           <p>Syncing your student workspace...</p>
         </div>
-      ) : isError ? (
+      ) : loadError ? (
         <div className="glass-card p-8 text-center text-xs text-red-500 font-mono border border-red-500/30 rounded-2xl">
-          {(error as any)?.message || 'Failed to load dashboard data'}
+          {loadError}
         </div>
       ) : stats?.totalEnrolledCourses === 0 ? (
         /* Empty State */

@@ -38,10 +38,17 @@ import { IntegrationProviderRegistry } from '../registry/providerRegistry.servic
 import { IntegrationOperationService } from './integrationOperation.service';
 import { DomainEventService } from '../../domainEvent.service';
 import crypto from 'crypto';
+import { tenantContextStorage } from '@edtech/utils';
 import { ZoomRecordingService } from './zoomRecording.service';
 import { ZoomAdapter } from '../adapters/zoom.adapter';
+import { TokenManagerService } from '../security/tokenManager.service';
+import { TrainerZoomAccountService } from './trainerZoomAccount.service';
 
 export class LiveClassOrchestratorService {
+  private static deterministicAdaptersEnabled() {
+    return process.env.NODE_ENV === 'test' && process.env.ENABLE_INTEGRATION_TEST_ADAPTERS === 'true';
+  }
+
   public static toDTO(doc: IExternalMeetingDocument): IExternalMeetingDTO {
     return {
       id: doc._id.toString(),
@@ -97,7 +104,8 @@ export class LiveClassOrchestratorService {
     rawInput: unknown,
     actor: BranchActor
   ): Promise<IExternalMeetingDTO> {
-    const input = CreateClassMeetingSchema.parse(rawInput);
+    return BranchAccessService.executeWithVerifiedTenantAuthority(tenantId, actor, async () => {
+      const input = CreateClassMeetingSchema.parse(rawInput);
 
     // 1. Fetch canonical Class
     const cls = await ClassModel.findOne({ _id: classId, tenantId });
@@ -154,6 +162,15 @@ export class LiveClassOrchestratorService {
       );
     }
 
+    if (input.provider === 'ZOOM' && !this.deterministicAdaptersEnabled()) {
+      const credentials = TokenManagerService.decryptCredentials(connection);
+      if (connection.metadata?.isDemo || (!credentials.accessToken && !credentials.refreshToken)) {
+        throw new BadRequestError(
+          'Zoom is not authorized with a real account. Reconnect Zoom through OAuth in Admin Settings → Integrations.'
+        );
+      }
+    }
+
     const providerAdapter = IntegrationProviderRegistry.getLiveMeetingProvider(input.provider);
     if (input.provider === 'ZOOM' && input.autoRecord) {
       const zoom = providerAdapter as ZoomAdapter;
@@ -161,6 +178,12 @@ export class LiveClassOrchestratorService {
       if (capability.state !== 'READY') throw new ConflictError(capability.message);
     }
     const priorAssociation = await ExternalMeetingModel.findOne({ tenantId, classId: cls._id });
+
+    // Multi-trainer host resolution for Zoom
+    let resolvedZoomHost: { hostExternalUserId: string; hostEmail: string; trainerUserId: string | null; isFallback: boolean; warning?: string } | undefined;
+    if (input.provider === 'ZOOM') {
+      resolvedZoomHost = await TrainerZoomAccountService.resolveHostForClass(tenantId, cls._id.toString());
+    }
 
     // 3. Execute with durable idempotency
     const idempotencyKey = `CREATE_MEETING:${cls._id}:${input.provider}`;
@@ -178,7 +201,15 @@ export class LiveClassOrchestratorService {
         agenda: input.agenda,
         startAt: cls.scheduledStartAt || cls.startDate,
         endAt: cls.scheduledEndAt || cls.endDate,
-        timezone: cls.timezone || 'UTC'
+        timezone: cls.timezone || 'UTC',
+        hostControls: {
+          muteParticipantsOnEntry: input.muteParticipantsOnEntry,
+          participantVideoOnEntry: input.participantVideoOnEntry,
+          waitingRoom: input.waitingRoom,
+          allowParticipantsToUnmute: input.allowParticipantsToUnmute,
+          allowParticipantsToStartVideo: input.allowParticipantsToStartVideo,
+          autoRecord: input.autoRecord
+        }
       },
       fn: async () => {
         const result = await providerAdapter.createMeeting(connection, {
@@ -191,8 +222,15 @@ export class LiveClassOrchestratorService {
           endTime: cls.scheduledEndAt || cls.endDate || new Date(),
           timezone: cls.timezone || 'UTC',
           organizerUserId: actor.userId,
+          hostExternalUserId: resolvedZoomHost?.hostExternalUserId,
+          hostEmail: resolvedZoomHost?.hostEmail,
           password: input.password,
-          autoRecord: input.autoRecord
+          autoRecord: input.autoRecord,
+          muteParticipantsOnEntry: input.muteParticipantsOnEntry,
+          participantVideoOnEntry: input.participantVideoOnEntry,
+          waitingRoom: input.waitingRoom,
+          allowParticipantsToUnmute: input.allowParticipantsToUnmute,
+          allowParticipantsToStartVideo: input.allowParticipantsToStartVideo
         });
         return { result, externalResourceId: result.externalMeetingId };
       }
@@ -235,7 +273,17 @@ export class LiveClassOrchestratorService {
           syncStatus: 'SYNCED',
           lastSyncedAt: new Date(),
           providerVersion: meetingResult.providerVersion || '1',
-          metadata: meetingResult.metadata || {}
+          metadata: {
+            ...(meetingResult.metadata || {}),
+            hostControls: {
+              muteParticipantsOnEntry: input.muteParticipantsOnEntry,
+              participantVideoOnEntry: input.participantVideoOnEntry,
+              waitingRoom: input.waitingRoom,
+              allowParticipantsToUnmute: input.allowParticipantsToUnmute,
+              allowParticipantsToStartVideo: input.allowParticipantsToStartVideo,
+              autoRecord: input.autoRecord
+            }
+          }
         }
         },
         { upsert: true, new: true, setDefaultsOnInsert: true }
@@ -307,10 +355,18 @@ export class LiveClassOrchestratorService {
       action: 'LIVE_CLASS_MEETING_CREATED',
       resource: 'ExternalMeeting',
       resourceId: externalMeeting._id.toString(),
-      metadata: { classId, provider: input.provider, externalMeetingId: meetingResult.externalMeetingId }
+      metadata: {
+        classId,
+        provider: input.provider,
+        externalMeetingId: meetingResult.externalMeetingId,
+        hostExternalUserId: resolvedZoomHost?.hostExternalUserId,
+        hostTrainerUserId: resolvedZoomHost?.trainerUserId,
+        isFallback: resolvedZoomHost?.isFallback
+      }
     });
 
     return this.toDTO(externalMeeting);
+    });
   }
 
   /**
@@ -321,84 +377,86 @@ export class LiveClassOrchestratorService {
     classId: string,
     actor: BranchActor
   ): Promise<IExternalMeetingDTO | null> {
-    const cls = await ClassModel.findOne({ _id: classId, tenantId });
-    if (!cls) throw new NotFoundError('Canonical Class not found');
-    const branchId = cls.branchId?.toString();
-    if (branchId) await BranchAccessService.assertBranchAccess(tenantId, actor, branchId, { requireActive: true });
-    if (actor.roles?.includes('INSTRUCTOR') && cls.instructorId?.toString() !== actor.userId) {
-      throw new ForbiddenError('Only the assigned instructor may manage this class meeting');
-    }
+    return BranchAccessService.executeWithVerifiedTenantAuthority(tenantId, actor, async () => {
+      const cls = await ClassModel.findOne({ _id: classId, tenantId });
+      if (!cls) throw new NotFoundError('Canonical Class not found');
+      const branchId = cls.branchId?.toString();
+      if (branchId) await BranchAccessService.assertBranchAccess(tenantId, actor, branchId, { requireActive: true });
+      if (actor.roles?.includes('INSTRUCTOR') && cls.instructorId?.toString() !== actor.userId) {
+        throw new ForbiddenError('Only the assigned instructor may manage this class meeting');
+      }
 
-    const externalMeeting = await ExternalMeetingModel.findOne({ tenantId, classId });
-    if (!externalMeeting) {
-      return null;
-    }
+      const externalMeeting = await ExternalMeetingModel.findOne({ tenantId, classId });
+      if (!externalMeeting) {
+        return null;
+      }
 
-    const connection = await IntegrationConnectionModel.findOne({
-      _id: externalMeeting.connectionId,
-      tenantId
-    });
+      const connection = await IntegrationConnectionModel.findOne({
+        _id: externalMeeting.connectionId,
+        tenantId
+      });
 
-    if (!connection) {
-      externalMeeting.syncStatus = 'FAILED';
-      await externalMeeting.save();
-      return this.toDTO(externalMeeting);
-    }
+      if (!connection) {
+        externalMeeting.syncStatus = 'FAILED';
+        await externalMeeting.save();
+        return this.toDTO(externalMeeting);
+      }
 
-    const providerAdapter = IntegrationProviderRegistry.getLiveMeetingProvider(externalMeeting.provider);
-    const revision = cls.scheduleRevision || 1;
-    const idempotencyKey = `RESCHEDULE_MEETING:${cls._id}:${revision}`;
+      const providerAdapter = IntegrationProviderRegistry.getLiveMeetingProvider(externalMeeting.provider);
+      const revision = cls.scheduleRevision || 1;
+      const idempotencyKey = `RESCHEDULE_MEETING:${cls._id}:${revision}`;
 
-    try {
-      if (!providerAdapter.capabilities.supportsUpdate) {
-        // Google Meet spaces have no scheduled start/end. DIDM remains the
-        // schedule authority and the existing space/join URI is preserved.
+      try {
+        if (!providerAdapter.capabilities.supportsUpdate) {
+          // Google Meet spaces have no scheduled start/end. DIDM remains the
+          // schedule authority and the existing space/join URI is preserved.
+          externalMeeting.scheduledStart = cls.scheduledStartAt || cls.startDate || new Date();
+          externalMeeting.scheduledEnd = cls.scheduledEndAt || cls.endDate || new Date();
+          externalMeeting.timezone = cls.timezone || 'UTC';
+          externalMeeting.syncStatus = 'SYNCED';
+          externalMeeting.lastSyncedAt = new Date();
+          externalMeeting.metadata = { ...(externalMeeting.metadata || {}), rescheduleSemantics: 'CANONICAL_ONLY_PROVIDER_SPACE_UNCHANGED' };
+          await externalMeeting.save();
+          return this.toDTO(externalMeeting);
+        }
+        const updatedResult = await IntegrationOperationService.executeWithIdempotency({
+          tenantId,
+          provider: externalMeeting.provider,
+          connectionId: connection._id.toString(),
+          operationType: 'RESCHEDULE_MEETING',
+          canonicalResourceType: 'Class',
+          canonicalResourceId: cls._id.toString(),
+          idempotencyKey,
+          payload: {
+            startAt: cls.scheduledStartAt || cls.startDate,
+            endAt: cls.scheduledEndAt || cls.endDate,
+            timezone: cls.timezone || 'UTC'
+          },
+          fn: async () => {
+            const result = await providerAdapter.updateMeeting(connection, externalMeeting.externalMeetingId, {
+              startTime: cls.scheduledStartAt || cls.startDate || new Date(),
+              endTime: cls.scheduledEndAt || cls.endDate || new Date(),
+              timezone: cls.timezone || 'UTC'
+            });
+            return { result, externalResourceId: externalMeeting.externalMeetingId };
+          }
+        });
+
         externalMeeting.scheduledStart = cls.scheduledStartAt || cls.startDate || new Date();
         externalMeeting.scheduledEnd = cls.scheduledEndAt || cls.endDate || new Date();
         externalMeeting.timezone = cls.timezone || 'UTC';
         externalMeeting.syncStatus = 'SYNCED';
         externalMeeting.lastSyncedAt = new Date();
-        externalMeeting.metadata = { ...(externalMeeting.metadata || {}), rescheduleSemantics: 'CANONICAL_ONLY_PROVIDER_SPACE_UNCHANGED' };
+        externalMeeting.providerVersion = updatedResult.providerVersion || '2';
         await externalMeeting.save();
+
         return this.toDTO(externalMeeting);
+      } catch (err: any) {
+        externalMeeting.syncStatus = 'FAILED';
+        await externalMeeting.save();
+        throw err;
       }
-      const updatedResult = await IntegrationOperationService.executeWithIdempotency({
-        tenantId,
-        provider: externalMeeting.provider,
-        connectionId: connection._id.toString(),
-        operationType: 'RESCHEDULE_MEETING',
-        canonicalResourceType: 'Class',
-        canonicalResourceId: cls._id.toString(),
-        idempotencyKey,
-        payload: {
-          startAt: cls.scheduledStartAt || cls.startDate,
-          endAt: cls.scheduledEndAt || cls.endDate,
-          timezone: cls.timezone || 'UTC'
-        },
-        fn: async () => {
-          const result = await providerAdapter.updateMeeting(connection, externalMeeting.externalMeetingId, {
-            startTime: cls.scheduledStartAt || cls.startDate || new Date(),
-            endTime: cls.scheduledEndAt || cls.endDate || new Date(),
-            timezone: cls.timezone || 'UTC'
-          });
-          return { result, externalResourceId: externalMeeting.externalMeetingId };
-        }
-      });
-
-      externalMeeting.scheduledStart = cls.scheduledStartAt || cls.startDate || new Date();
-      externalMeeting.scheduledEnd = cls.scheduledEndAt || cls.endDate || new Date();
-      externalMeeting.timezone = cls.timezone || 'UTC';
-      externalMeeting.syncStatus = 'SYNCED';
-      externalMeeting.lastSyncedAt = new Date();
-      externalMeeting.providerVersion = updatedResult.providerVersion || '2';
-      await externalMeeting.save();
-
-      return this.toDTO(externalMeeting);
-    } catch (err: any) {
-      externalMeeting.syncStatus = 'FAILED';
-      await externalMeeting.save();
-      throw err;
-    }
+    });
   }
 
   /**
@@ -410,49 +468,56 @@ export class LiveClassOrchestratorService {
     reason?: string,
     actor?: BranchActor
   ): Promise<boolean> {
-    const cls = await ClassModel.findOne({ _id: classId, tenantId });
-    if (!cls) throw new NotFoundError('Canonical Class not found');
-    const branchId = cls.branchId?.toString();
-    if (branchId && actor) await BranchAccessService.assertBranchAccess(tenantId, actor, branchId, { requireActive: true });
-    if (actor?.roles?.includes('INSTRUCTOR') && cls.instructorId?.toString() !== actor.userId) {
-      throw new ForbiddenError('Only the assigned instructor may manage this class meeting');
-    }
-    const externalMeeting = await ExternalMeetingModel.findOne({ tenantId, classId });
-    if (!externalMeeting) return true;
-
-    const connection = await IntegrationConnectionModel.findOne({
-      _id: externalMeeting.connectionId,
-      tenantId
-    });
-
-    if (connection) {
-      try {
-        const providerAdapter = IntegrationProviderRegistry.getLiveMeetingProvider(externalMeeting.provider);
-        const idempotencyKey = `CANCEL_MEETING:${classId}:${Date.now()}`;
-
-        await IntegrationOperationService.executeWithIdempotency({
-          tenantId,
-          provider: externalMeeting.provider,
-          connectionId: connection._id.toString(),
-          operationType: 'CANCEL_MEETING',
-          canonicalResourceType: 'Class',
-          canonicalResourceId: classId,
-          idempotencyKey,
-          payload: { reason },
-          fn: async () => {
-            const success = await providerAdapter.cancelMeeting(connection, externalMeeting.externalMeetingId, reason);
-            return { result: success, externalResourceId: externalMeeting.externalMeetingId };
-          }
-        });
-      } catch {
-        // Tolerant to provider offline during cancellation
+    const execute = async () => {
+      const cls = await ClassModel.findOne({ _id: classId, tenantId });
+      if (!cls) throw new NotFoundError('Canonical Class not found');
+      const branchId = cls.branchId?.toString();
+      if (branchId && actor) await BranchAccessService.assertBranchAccess(tenantId, actor, branchId, { requireActive: true });
+      if (actor?.roles?.includes('INSTRUCTOR') && cls.instructorId?.toString() !== actor.userId) {
+        throw new ForbiddenError('Only the assigned instructor may manage this class meeting');
       }
-    }
+      const externalMeeting = await ExternalMeetingModel.findOne({ tenantId, classId });
+      if (!externalMeeting) return true;
 
-    externalMeeting.providerStatus = 'CANCELLED';
-    externalMeeting.syncStatus = 'SYNCED';
-    await externalMeeting.save();
-    return true;
+      const connection = await IntegrationConnectionModel.findOne({
+        _id: externalMeeting.connectionId,
+        tenantId
+      });
+
+      if (connection) {
+        try {
+          const providerAdapter = IntegrationProviderRegistry.getLiveMeetingProvider(externalMeeting.provider);
+          const idempotencyKey = `CANCEL_MEETING:${classId}:${Date.now()}`;
+
+          await IntegrationOperationService.executeWithIdempotency({
+            tenantId,
+            provider: externalMeeting.provider,
+            connectionId: connection._id.toString(),
+            operationType: 'CANCEL_MEETING',
+            canonicalResourceType: 'Class',
+            canonicalResourceId: classId,
+            idempotencyKey,
+            payload: { reason },
+            fn: async () => {
+              const success = await providerAdapter.cancelMeeting(connection, externalMeeting.externalMeetingId, reason);
+              return { result: success, externalResourceId: externalMeeting.externalMeetingId };
+            }
+          });
+        } catch {
+          // Tolerant to provider offline during cancellation
+        }
+      }
+
+      externalMeeting.providerStatus = 'CANCELLED';
+      externalMeeting.syncStatus = 'SYNCED';
+      await externalMeeting.save();
+      return true;
+    };
+
+    if (actor) {
+      return BranchAccessService.executeWithVerifiedTenantAuthority(tenantId, actor, execute);
+    }
+    return execute();
   }
 
   /**
@@ -465,6 +530,12 @@ export class LiveClassOrchestratorService {
     classId: string,
     actor: BranchActor
   ): Promise<IJoinInformationDTO> {
+    if (!tenantContextStorage.getStore()?.currentTenantId) {
+      return tenantContextStorage.run(
+        { currentTenantId: tenantId },
+        () => this.getAuthorizedJoinInfo(tenantId, classId, actor)
+      );
+    }
     // 1. Fetch Class
     const cls = await ClassModel.findOne({ _id: classId, tenantId });
     if (!cls) {
@@ -519,6 +590,12 @@ export class LiveClassOrchestratorService {
       const state = connection?.status || 'DISCONNECTED';
       throw new ConflictError(`Live meeting provider is unavailable: ${state}`);
     }
+    if (externalMeeting.provider === 'ZOOM' && !this.deterministicAdaptersEnabled()) {
+      const credentials = TokenManagerService.decryptCredentials(connection);
+      if (connection.metadata?.isDemo || (!credentials.accessToken && !credentials.refreshToken)) {
+        throw new ConflictError('This Zoom meeting is demo data. Connect a real Zoom account and create a new meeting.');
+      }
+    }
 
     const isHost = isInstructor || isSuperOrTenantAdmin;
 
@@ -553,6 +630,12 @@ export class LiveClassOrchestratorService {
     actor: BranchActor,
     rawOptions?: unknown
   ): Promise<IAttendanceEvidenceDTO[]> {
+    if (!tenantContextStorage.getStore()?.currentTenantId) {
+      return tenantContextStorage.run(
+        { currentTenantId: tenantId },
+        () => this.syncAttendanceEvidence(tenantId, classId, actor, rawOptions)
+      );
+    }
     const cls = await ClassModel.findOne({ _id: classId, tenantId });
     if (!cls) throw new NotFoundError('Class not found');
 

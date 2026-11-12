@@ -122,11 +122,13 @@ export function normalizeError(input: unknown, defaultTitle?: string): Normalize
   let fieldErrors: Record<string, string> | undefined = undefined;
 
   const errObj = input as any;
+  const explicitRetryable = typeof errObj?.retryable === 'boolean' ? errObj.retryable : undefined;
 
   // Handle standard Error instance
   if (input instanceof Error) {
     technicalDetails = input.stack;
     message = input.message;
+    code = typeof errObj.code === 'string' ? errObj.code : undefined;
 
     // Check network / timeout specific messages
     if (input.name === 'AbortError' || input.message.toLowerCase().includes('timeout')) {
@@ -185,6 +187,10 @@ export function normalizeError(input: unknown, defaultTitle?: string): Normalize
     code = errObj.code;
   }
 
+  if (typeof errObj?.technicalDetails === 'string') {
+    technicalDetails = errObj.technicalDetails;
+  }
+
   // String error
   if (typeof input === 'string') {
     message = input;
@@ -195,7 +201,7 @@ export function normalizeError(input: unknown, defaultTitle?: string): Normalize
 
   const title = defaultTitle || (statusCode ? fallback.title : 'Something Went Wrong');
   const finalMessage = message && message.trim().length > 0 ? message : fallback.message;
-  const retryable = statusCode ? fallback.retryable : true;
+  const retryable = explicitRetryable ?? (statusCode ? fallback.retryable : true);
 
   return {
     title,

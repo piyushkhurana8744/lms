@@ -65,7 +65,11 @@ function AdmissionsContent() {
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: ['crm-admissions-list'] });
       queryClient.invalidateQueries({ queryKey: ['crm-dashboard-summary'] });
-      showToast(`Student admitted & enrolled in ${res.courseTitle || 'course'} successfully!`);
+      showToast(
+        `Student admitted & enrolled in ${res.courseTitle || 'course'}${
+          res.receiptNumber ? ` (Receipt #${res.receiptNumber})` : ''
+        } successfully!`
+      );
     },
     onError: (err: Error) => showError({ title: 'Admit Failed', message: err.message })
   });

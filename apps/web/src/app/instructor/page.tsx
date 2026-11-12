@@ -18,6 +18,7 @@ import {
   Award
 } from 'lucide-react';
 import { Button } from '@edtech/ui';
+import { useAuth } from '@/components/auth-provider';
 
 interface InstructorDashboardData {
   classesToday: number;
@@ -27,6 +28,13 @@ interface InstructorDashboardData {
   classesThisWeek: number;
   scheduledTeachingMinutesThisWeek: number;
   timezone: string;
+  zoomAccount?: {
+    zoomEmail: string;
+    licenseType: string;
+    isHostEligible: boolean;
+    ineligibilityReason?: string;
+    lastSyncedAt?: string;
+  } | null;
   todaysClasses?: Array<{
     _id: string;
     name: string;
@@ -43,12 +51,20 @@ interface InstructorDashboardData {
 }
 
 export default function InstructorDashboardPage() {
+  const { user, isLoading: isAuthLoading } = useAuth();
   const [data, setData] = useState<InstructorDashboardData | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/v1/instructor/dashboard')
+    if (isAuthLoading) return;
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+    fetch('/api/v1/instructor/dashboard', { credentials: 'same-origin' })
       .then(async (r) => {
         if (!r.ok) {
           throw new Error(
@@ -60,16 +76,24 @@ export default function InstructorDashboardPage() {
         return r.json();
       })
       .then((res) => {
-        setData(res.data);
-        setLoading(false);
+        if (isMounted) {
+          setData(res.data);
+          setLoading(false);
+        }
       })
       .catch((e) => {
-        setError(e.message);
-        setLoading(false);
+        if (isMounted) {
+          setError(e.message);
+          setLoading(false);
+        }
       });
-  }, []);
 
-  if (loading) {
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthLoading, user]);
+
+  if (isAuthLoading || loading) {
     return (
       <div className="p-8 max-w-7xl mx-auto flex flex-col items-center justify-center min-h-[50vh] space-y-4">
         <div className="w-10 h-10 border-3 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -177,6 +201,40 @@ export default function InstructorDashboardPage() {
               <ClipboardCheck className="w-3.5 h-3.5 mr-1.5" /> Grading Queue ({data.pendingGrading})
             </Button>
           </Link>
+        </div>
+      </div>
+
+      {/* Zoom Host Account Status */}
+      <div className="glass-card p-4 rounded-2xl border border-[var(--brand-border)] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className={`p-2.5 rounded-xl ${data.zoomAccount?.isHostEligible ? 'bg-emerald-500/10 text-emerald-500' : data.zoomAccount ? 'bg-amber-500/10 text-amber-500' : 'bg-blue-500/10 text-blue-500'}`}>
+            <Video className="w-5 h-5" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold text-[var(--brand-text)]">
+                Zoom Host Account:
+              </span>
+              {data.zoomAccount?.isHostEligible ? (
+                <span className="text-[11px] font-mono font-semibold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                  Licensed Host Active
+                </span>
+              ) : data.zoomAccount ? (
+                <span className="text-[11px] font-mono font-semibold text-amber-500 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+                  {data.zoomAccount.ineligibilityReason || 'Ineligible Host'}
+                </span>
+              ) : (
+                <span className="text-[11px] font-mono font-semibold text-[var(--text-muted)] bg-muted px-2 py-0.5 rounded-full border border-border">
+                  Not Mapped
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-[var(--text-muted)] mt-0.5">
+              {data.zoomAccount
+                ? `Mapped to ${data.zoomAccount.zoomEmail} (${data.zoomAccount.licenseType} license)`
+                : 'Your institute Zoom account is not mapped yet. Contact your administrator to enable automatic hosting.'}
+            </p>
+          </div>
         </div>
       </div>
 

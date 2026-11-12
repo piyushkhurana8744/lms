@@ -1,5 +1,5 @@
-import { NotificationCategory, NotificationDeliveryModel, NotificationIntentModel, NotificationModel, NotificationPreferenceModel, NotificationType, OrganizationEmailSettingsModel, OutboxEventModel, UserModel } from '@edtech/database';
-import { getWorkspaceContext } from '@edtech/utils';
+import { NotificationCategory, NotificationDeliveryModel, NotificationIntentModel, NotificationModel, NotificationPreferenceModel, NotificationType, OrganizationEmailSettingsModel, OutboxEventModel, runAuthorizedSystemOperation, SystemAuthority, UserModel } from '@edtech/database';
+import { getWorkspaceContext, tenantContextStorage, tryGetWorkspaceContext } from '@edtech/utils';
 import { BadRequestError, NotFoundError } from '../errors/appError';
 import { EmailService } from './email/email.service';
 import { getCertificatePublicOrigin } from './certificateArtifact.service';
@@ -43,16 +43,18 @@ export class NotificationService {
   static async updatePreferences(userId: string, input: Array<{ category: NotificationCategory; inAppEnabled: boolean; emailEnabled: boolean }>) { const tenantId = this.tenant(); for (const item of input) { if (!CATEGORIES.includes(item.category)) throw new BadRequestError('Unknown notification category'); await NotificationPreferenceModel.updateOne({ tenantId, userId, category: item.category }, { $set: { inAppEnabled: item.inAppEnabled, emailEnabled: item.emailEnabled } }, { upsert: true }); } return this.preferences(userId); }
 
   static async createIntent(intent: NotificationIntent) {
-    const recipient = await UserModel.findOne({ _id: intent.recipientUserId, tenantId: intent.tenantId }).setOptions({ bypassTenantFilter: true }).select('status email').lean();
+    const context = tryGetWorkspaceContext();
+    if (!context?.currentTenantId || context.currentTenantId !== intent.tenantId) throw new Error('Notification composition tenant context mismatch');
+    const recipient = await UserModel.findOne({ _id: intent.recipientUserId, tenantId: intent.tenantId }).select('status email').lean();
     if (!recipient) throw new NotFoundError('Notification recipient not found');
     const content = template(intent.type, intent.data); const occurrence = intent.occurrenceKey || 'default';
     const deduplicationKey = `${intent.recipientUserId}:${intent.type}:${intent.sourceType}:${intent.sourceId}:${occurrence}`;
-    const preference = await NotificationPreferenceModel.findOne({ tenantId: intent.tenantId, userId: intent.recipientUserId, category: content.category }).setOptions({ bypassTenantFilter: true }).lean();
+    const preference = await NotificationPreferenceModel.findOne({ tenantId: intent.tenantId, userId: intent.recipientUserId, category: content.category }).lean();
     const inAppEnabled = preference?.inAppEnabled ?? true; const emailEnabled = MANDATORY.has(intent.type) || (preference?.emailEnabled ?? true);
     if (!inAppEnabled && !emailEnabled) return null;
     let notification;
     try { notification = await NotificationModel.create({ tenantId: intent.tenantId, recipientUserId: intent.recipientUserId, type: intent.type, category: content.category, title: content.title, body: content.body, actionUrl: content.actionUrl, sourceType: intent.sourceType, sourceId: intent.sourceId, occurrenceKey: occurrence, deduplicationKey }); }
-    catch (error: unknown) { if ((error as { code?: number }).code !== 11000) throw error; notification = await NotificationModel.findOne({ tenantId: intent.tenantId, deduplicationKey }).setOptions({ bypassTenantFilter: true }); }
+    catch (error: unknown) { if ((error as { code?: number }).code !== 11000) throw error; notification = await NotificationModel.findOne({ tenantId: intent.tenantId, deduplicationKey }); }
     if (notification && emailEnabled) await NotificationDeliveryModel.updateOne({ notificationId: notification._id, channel: 'EMAIL' }, { $setOnInsert: { tenantId: intent.tenantId, recipientUserId: intent.recipientUserId, status: recipient.status === 'ACTIVE' ? 'PENDING' : 'SKIPPED', attemptCount: 0, nextRetryAt: new Date(), lastErrorCode: recipient.status === 'ACTIVE' ? undefined : 'RECIPIENT_INACTIVE' } }, { upsert: true });
     return notification;
   }
@@ -64,18 +66,34 @@ export class NotificationService {
       { upsert: true, new: true }
     );
   }
-  static async consumeOutboxEvent(eventId: string) {
+  static async consumeOutboxEvent(eventId: string, authority?: SystemAuthority, expectedTenantId?: string) {
     if (handoffFailure) throw new Error('Injected notification handoff crash');
-    const now = new Date(); const event = await NotificationIntentModel.findOneAndUpdate({ eventId, attemptCount: { $lt: 5 }, availableAt: { $lte: now }, $or: [{ status: { $in: ['PENDING', 'FAILED'] } }, { status: 'PROCESSING', leaseUntil: { $lt: now } }] }, { $set: { status: 'PROCESSING', leaseUntil: new Date(now.getTime() + LEASE_MS) }, $inc: { attemptCount: 1 } }, { new: true });
-    if (!event) return NotificationIntentModel.findOne({ eventId });
-    try { await DomainEventService.publish({ tenantId:event.tenantId.toString(),eventId:`domain:${event.eventId}`,eventType:event.type,occurredAt:new Date(),resourceType:event.sourceType.replace(/[^A-Za-z0-9]/g,''),resourceId:event.sourceId,branchId:event.branchId?.toString(),correlationId:event.eventId,depth:0,payloadVersion:1,payload:{...event.data,recipientUserId:event.recipientUserId.toString()} }); await this.createIntent({ tenantId: event.tenantId.toString(), recipientUserId: event.recipientUserId.toString(), type: event.type, sourceType: event.sourceType, sourceId: event.sourceId, occurrenceKey: event.occurrenceKey, data: event.data }); event.status = 'PROCESSED'; event.processedAt = new Date(); event.leaseUntil = undefined; event.lastError = undefined; await event.save(); return event; }
+    const workspaceTenant = tryGetWorkspaceContext()?.currentTenantId;
+    let tenantId = expectedTenantId || workspaceTenant;
+    if (authority) {
+      const binding = await runAuthorizedSystemOperation(authority, { kind: 'NOTIFICATION_DISPATCH', reason: 'Resolve notification intent tenant', correlationId: eventId }, () => NotificationIntentModel.findOne({ eventId }).setOptions({ authorizedSystemOperation: 'NOTIFICATION_DISPATCH' }).select('_id tenantId').lean());
+      if (!binding?.tenantId) return null;
+      if (tenantId && binding.tenantId.toString() !== tenantId) throw new Error('Notification intent tenant binding rejected');
+      tenantId = binding.tenantId.toString();
+    }
+    if (!tenantId || (workspaceTenant && workspaceTenant !== tenantId)) throw new Error('Notification intent tenant context required');
+    const now = new Date();
+    const event = await tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: authority?.principal || 'notification-domain', isPlatformContext: false, allowedTenantIds: [tenantId] }, async () => await NotificationIntentModel.findOneAndUpdate({ eventId, tenantId, attemptCount: { $lt: 5 }, availableAt: { $lte: now }, $or: [{ status: { $in: ['PENDING', 'FAILED'] } }, { status: 'PROCESSING', leaseUntil: { $lt: now } }] }, { $set: { status: 'PROCESSING', leaseUntil: new Date(now.getTime() + LEASE_MS) }, $inc: { attemptCount: 1 } }, { new: true }));
+    if (!event) return await tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: authority?.principal || 'notification-domain', isPlatformContext: false, allowedTenantIds: [tenantId] }, async () => await NotificationIntentModel.findOne({ eventId, tenantId }));
+    try { await tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: authority?.principal || 'notification-domain', isPlatformContext: false, allowedTenantIds: [tenantId] }, async () => { await DomainEventService.publish({ tenantId:event.tenantId.toString(),eventId:`domain:${event.eventId}`,eventType:event.type,occurredAt:new Date(),resourceType:event.sourceType.replace(/[^A-Za-z0-9]/g,''),resourceId:event.sourceId,branchId:event.branchId?.toString(),correlationId:event.eventId,depth:0,payloadVersion:1,payload:{...event.data,recipientUserId:event.recipientUserId.toString()} }); await this.createIntent({ tenantId: event.tenantId.toString(), recipientUserId: event.recipientUserId.toString(), type: event.type, sourceType: event.sourceType, sourceId: event.sourceId, occurrenceKey: event.occurrenceKey, data: event.data }); event.status = 'PROCESSED'; event.processedAt = new Date(); event.leaseUntil = undefined; event.lastError = undefined; await event.save(); }); return event; }
     catch (error: unknown) { event.status = event.attemptCount >= 5 ? 'FAILED' : 'PENDING'; event.availableAt = new Date(Date.now() + Math.min(300_000, 5_000 * (2 ** event.attemptCount))); event.leaseUntil = undefined; event.lastError = String((error as Error).message || error).slice(0, 500); await event.save(); throw error; }
   }
-  static async consumeFinanceOutboxEvent(eventId: string) {
-    const event = await OutboxEventModel.findOne({ eventId, eventType: 'payment.success' }).setOptions({ bypassTenantFilter: true }).lean();
-    if (!event) throw new NotFoundError('Finance event not found');
-    await DomainEventService.publish({tenantId:event.tenantId.toString(),eventId:`domain:${event.eventId}`,eventType:'payment.success',occurredAt:new Date(),resourceType:'Payment',resourceId:event.aggregateId.toString(),correlationId:event.eventId,depth:0,payloadVersion:1,payload:{amountMinor:event.payload.amountMinor,studentId:event.payload.studentUserId,paymentNumber:event.payload.paymentNumber,recipientUserId:event.payload.studentUserId}});
-    return this.createIntent({ tenantId: event.tenantId.toString(), recipientUserId: String(event.payload.studentUserId || ''), type: 'payment.success', sourceType: 'Payment', sourceId: event.aggregateId.toString(), data: { paymentNumber: String(event.payload.paymentNumber || '') } });
+  static async consumeFinanceOutboxEvent(eventId: string, authority: SystemAuthority, expectedTenantId?: string) {
+    const binding = await runAuthorizedSystemOperation(authority, { kind: 'OUTBOX_DISPATCH', reason: 'Resolve finance outbox tenant', correlationId: eventId }, () => OutboxEventModel.findOne({ eventId, eventType: 'payment.success' }).setOptions({ authorizedSystemOperation: 'OUTBOX_DISPATCH' }).select('_id tenantId').lean());
+    if (!binding?.tenantId) throw new NotFoundError('Finance event not found');
+    const tenantId = binding.tenantId.toString();
+    if (expectedTenantId && expectedTenantId !== tenantId) throw new Error('Finance outbox tenant binding rejected');
+    return tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: authority.principal, isPlatformContext: false, allowedTenantIds: [tenantId] }, async () => {
+      const event = await OutboxEventModel.findOne({ _id: binding._id, tenantId, eventType: 'payment.success' }).lean();
+      if (!event) throw new NotFoundError('Finance event not found');
+      await DomainEventService.publish({tenantId,eventId:`domain:${event.eventId}`,eventType:'payment.success',occurredAt:new Date(),resourceType:'Payment',resourceId:event.aggregateId.toString(),correlationId:event.eventId,depth:0,payloadVersion:1,payload:{amountMinor:event.payload.amountMinor,studentId:event.payload.studentUserId,paymentNumber:event.payload.paymentNumber,recipientUserId:event.payload.studentUserId}});
+      return this.createIntent({ tenantId, recipientUserId: String(event.payload.studentUserId || ''), type: 'payment.success', sourceType: 'Payment', sourceId: event.aggregateId.toString(), data: { paymentNumber: String(event.payload.paymentNumber || '') } });
+    });
   }
 
   private static dto(item: any) { return { id: item._id.toString(), type: item.type, category: item.category, title: item.title, body: item.body, actionUrl: item.actionUrl, createdAt: item.createdAt, readAt: item.readAt, isRead: Boolean(item.readAt), metadata: item.metadata || undefined }; }
@@ -84,11 +102,18 @@ export class NotificationService {
   static async setRead(userId: string, id: string, read: boolean) { const item = await NotificationModel.findOneAndUpdate({ _id: id, tenantId: this.tenant(), recipientUserId: userId }, { $set: { readAt: read ? new Date() : null } }, { new: true }); if (!item) throw new NotFoundError('Notification not found'); return this.dto(item); }
   static async markAllRead(userId: string, cutoff = new Date()) { await NotificationModel.updateMany({ tenantId: this.tenant(), recipientUserId: userId, readAt: null, createdAt: { $lte: cutoff } }, { $set: { readAt: new Date() } }); return { cutoff, unreadCount: await this.unreadCount(userId) }; }
 
-  static async claimDelivery(id: string, now = new Date()) { return NotificationDeliveryModel.findOneAndUpdate({ _id: id, attemptCount: { $lt: MAX_ATTEMPTS }, isRetryable: { $ne: false }, $or: [{ status: { $in: ['PENDING', 'FAILED'] }, nextRetryAt: { $lte: now } }, { status: 'PROCESSING', leaseUntil: { $lt: now } }] }, { $set: { status: 'PROCESSING', leaseUntil: new Date(now.getTime() + LEASE_MS), lastAttemptAt: now }, $inc: { attemptCount: 1 } }, { new: true }).setOptions({ bypassTenantFilter: true }); }
-  static async processDelivery(id: string) {
-    const delivery = await this.claimDelivery(id); if (!delivery) return null;
+  static async claimDelivery(id: string, authority: SystemAuthority, expectedTenantId?: string, now = new Date()) {
+    const binding = await runAuthorizedSystemOperation(authority, { kind: 'NOTIFICATION_DISPATCH', reason: 'Resolve notification delivery tenant', correlationId: id }, () => NotificationDeliveryModel.findById(id).setOptions({ authorizedSystemOperation: 'NOTIFICATION_DISPATCH' }).select('_id tenantId').lean());
+    if (!binding?.tenantId) return null;
+    const tenantId = binding.tenantId.toString();
+    if (expectedTenantId && expectedTenantId !== tenantId) throw new Error('Notification delivery tenant binding rejected');
+    return await tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: authority.principal, isPlatformContext: false, allowedTenantIds: [tenantId] }, async () => await NotificationDeliveryModel.findOneAndUpdate({ _id: binding._id, tenantId, attemptCount: { $lt: MAX_ATTEMPTS }, isRetryable: { $ne: false }, $or: [{ status: { $in: ['PENDING', 'FAILED'] }, nextRetryAt: { $lte: now } }, { status: 'PROCESSING', leaseUntil: { $lt: now } }] }, { $set: { status: 'PROCESSING', leaseUntil: new Date(now.getTime() + LEASE_MS), lastAttemptAt: now }, $inc: { attemptCount: 1 } }, { new: true }));
+  }
+  static async processDelivery(id: string, authority: SystemAuthority, expectedTenantId?: string) {
+    const delivery = await this.claimDelivery(id, authority, expectedTenantId); if (!delivery) return null;
+    const tenantId = delivery.tenantId.toString();
     try {
-      const [notification, recipient, settings] = await Promise.all([NotificationModel.findById(delivery.notificationId).setOptions({ bypassTenantFilter: true }).lean(), UserModel.findOne({ _id: delivery.recipientUserId, tenantId: delivery.tenantId }).setOptions({ bypassTenantFilter: true }).select('email status').lean(), OrganizationEmailSettingsModel.findOne({ tenantId: delivery.tenantId }).setOptions({ bypassTenantFilter: true })]);
+      const [notification, recipient, settings] = await tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: authority.principal, isPlatformContext: false, allowedTenantIds: [tenantId] }, async () => await Promise.all([NotificationModel.findOne({ _id: delivery.notificationId, tenantId }).lean(), UserModel.findOne({ _id: delivery.recipientUserId, tenantId }).select('email status').lean(), OrganizationEmailSettingsModel.findOne({ tenantId })]));
       if (!notification || !recipient || recipient.status !== 'ACTIVE' || !recipient.email) { delivery.status = 'SKIPPED'; delivery.lastErrorCode = 'INVALID_RECIPIENT'; delivery.sanitizedLastError = 'Recipient is unavailable'; delivery.leaseUntil = undefined; await delivery.save(); return delivery; }
       if (!settings || settings.status === 'NOT_CONFIGURED') { delivery.status = 'SKIPPED'; delivery.lastErrorCode = 'EMAIL_NOT_CONFIGURED'; delivery.sanitizedLastError = 'Tenant email is not configured'; delivery.leaseUntil = undefined; await delivery.save(); return delivery; }
       const origin = await getCertificatePublicOrigin(delivery.tenantId.toString()); const actionUrl = notification.actionUrl ? `${origin}${notification.actionUrl}` : origin;

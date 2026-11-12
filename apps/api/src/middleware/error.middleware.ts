@@ -38,7 +38,20 @@ export function errorHandler(
     return ApiResponse.error(res, `Duplicate key value for ${field}`, 409, 'ERR_DUPLICATE_KEY');
   }
 
-  // 5. Fallback Unknown Unhandled Errors
+  // 5. Database connectivity errors are service failures, not credential errors.
+  if (
+    err?.name === 'MongooseServerSelectionError' ||
+    /buffering timed out|server selection timed out/i.test(err?.message || '')
+  ) {
+    return ApiResponse.error(
+      res,
+      'Database service is temporarily unavailable. Please try again shortly.',
+      503,
+      'ERR_DATABASE_UNAVAILABLE'
+    );
+  }
+
+  // 6. Fallback Unknown Unhandled Errors
   const message = process.env.NODE_ENV === 'production' ? 'An unexpected internal server error occurred' : err.message;
   return ApiResponse.error(res, message, 500, 'ERR_INTERNAL_SERVER');
 }

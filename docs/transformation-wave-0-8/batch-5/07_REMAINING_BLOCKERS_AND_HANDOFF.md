@@ -1,0 +1,3 @@
+# Remaining blockers and handoff
+
+User remains STAGED because tenantless registration creation lacks a narrow document policy and product semantics. Next: decide whether tenantless public registration is prohibited or define a minimal platform-account registration policy; add real login/registration/refresh/logout Mongo tests; then activate User. Convert membership authorization fully into tenant context before activating OrganizationMember. Registry numbers are 3 protected / 65 unprotected / 63 unclassified. Raw driver report contains only the isolated Phase 22 maintenance script. Critical audit durability and full regression remain open. Wave 1 is BLOCKED.

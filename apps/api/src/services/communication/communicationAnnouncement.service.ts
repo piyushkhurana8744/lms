@@ -330,7 +330,7 @@ export class CommunicationAnnouncementService {
       });
 
       try {
-        await NotificationIntentModel.collection.insertMany(intents, { ordered: false });
+        await NotificationIntentModel.insertMany(intents, { ordered: false });
       } catch (err: any) {
         // Ignore duplicate key errors if already present
         if (err.code !== 11000) throw err;

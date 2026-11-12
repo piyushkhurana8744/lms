@@ -14,6 +14,7 @@ import { Button } from '@edtech/ui';
 import { Plus } from 'lucide-react';
 import { useConfirmation } from '@/components/confirmation/useConfirmation';
 import { CurriculumSkeleton } from '@/components/loading/SkeletonLoaders';
+import { requestJson } from '@/lib/api-request';
 
 interface CourseCurriculumBuilderProps {
   courseId: string;
@@ -43,23 +44,13 @@ export function CourseCurriculumBuilder({ courseId }: CourseCurriculumBuilderPro
   // 1. Fetch Course Metadata
   const { data: course, isLoading: isCourseLoading } = useQuery({
     queryKey: ['admin-course-detail', courseId],
-    queryFn: async () => {
-      const res = await fetch(`/api/v1/courses/${courseId}`);
-      if (!res.ok) throw new Error('Course not found or access denied');
-      const json = await res.json();
-      return json.data as ICourse;
-    }
+    queryFn: () => requestJson<ICourse>(`/api/v1/courses/${courseId}`)
   });
 
   // 2. Fetch Course Modules
   const { data: modulesData, isLoading: isModulesLoading } = useQuery({
     queryKey: ['admin-course-modules', courseId],
-    queryFn: async () => {
-      const res = await fetch(`/api/v1/courses/${courseId}/modules`);
-      if (!res.ok) throw new Error('Failed to fetch curriculum modules');
-      const json = await res.json();
-      return json.data as ICourseModule[];
-    }
+    queryFn: () => requestJson<ICourseModule[]>(`/api/v1/courses/${courseId}/modules`)
   });
 
   const modules: ICourseModule[] = React.useMemo(() => modulesData || [], [modulesData]);
@@ -94,21 +85,18 @@ export function CourseCurriculumBuilder({ courseId }: CourseCurriculumBuilderPro
         : `/api/v1/courses/${courseId}/modules`;
       const method = editingModule ? 'PATCH' : 'POST';
 
-      const res = await fetch(url, {
+      return requestJson<ICourseModule>(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error?.message || 'Failed to save module');
-      return json.data;
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['admin-course-modules', courseId] });
       setIsModuleDialogOpen(false);
       setEditingModule(null);
-      if (data?.id || data?._id) {
-        setExpandedModuleIds((prev) => new Set(prev).add(data.id || data._id));
+      if (data?.id || (data as any)?._id) {
+        setExpandedModuleIds((prev) => new Set(prev).add(data.id || (data as any)._id));
       }
     },
     onError: (err: any) => setErrorMessage(err.message)
@@ -116,25 +104,20 @@ export function CourseCurriculumBuilder({ courseId }: CourseCurriculumBuilderPro
 
   const archiveModuleMutation = useMutation({
     mutationFn: async (mId: string) => {
-      const res = await fetch(`/api/v1/courses/${courseId}/modules/${mId}`, {
+      return requestJson(`/api/v1/courses/${courseId}/modules/${mId}`, {
         method: 'DELETE'
       });
-      if (!res.ok) throw new Error('Failed to archive module');
-      return res.json();
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['admin-course-modules', courseId] })
   });
 
   const reorderModulesMutation = useMutation({
     mutationFn: async (newModuleIds: string[]) => {
-      const res = await fetch(`/api/v1/courses/${courseId}/modules/reorder`, {
+      return requestJson<ICourseModule[]>(`/api/v1/courses/${courseId}/modules/reorder`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ moduleIds: newModuleIds })
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error?.message || 'Failed to reorder modules');
-      return json.data;
     },
     onMutate: async (newModuleIds: string[]) => {
       await queryClient.cancelQueries({ queryKey: ['admin-course-modules', courseId] });
@@ -184,14 +167,12 @@ export function CourseCurriculumBuilder({ courseId }: CourseCurriculumBuilderPro
         : `/api/v1/courses/${courseId}/modules/${mId}/lessons`;
       const method = editingLesson ? 'PATCH' : 'POST';
 
-      const res = await fetch(url, {
+      const data = await requestJson<ILesson>(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json.error?.message || 'Failed to save lesson');
-      return { data: json.data, moduleId: mId };
+      return { data, moduleId: mId };
     },
     onSuccess: (res) => {
       if (res.moduleId) {
@@ -206,10 +187,9 @@ export function CourseCurriculumBuilder({ courseId }: CourseCurriculumBuilderPro
 
   const archiveLessonMutation = useMutation({
     mutationFn: async ({ mId, lId }: { mId: string; lId: string }) => {
-      const res = await fetch(`/api/v1/courses/${courseId}/modules/${mId}/lessons/${lId}`, {
+      await requestJson(`/api/v1/courses/${courseId}/modules/${mId}/lessons/${lId}`, {
         method: 'DELETE'
       });
-      if (!res.ok) throw new Error('Failed to archive lesson');
       return { mId, lId };
     },
     onSuccess: (res) => queryClient.invalidateQueries({ queryKey: ['admin-lessons', courseId, res.mId] })

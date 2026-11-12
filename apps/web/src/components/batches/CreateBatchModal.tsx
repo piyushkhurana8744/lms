@@ -675,7 +675,7 @@ export function CreateBatchModal({
                     }`}
                   >
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Auto-Create (Zoom)</span>
+                    <span>Use Zoom for scheduled classes</span>
                   </button>
                   <button
                     type="button"
@@ -695,10 +695,10 @@ export function CreateBatchModal({
                 <div className="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-xs space-y-1">
                   <div className="font-bold text-blue-600 dark:text-blue-400 flex items-center gap-1.5">
                     <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                    <span>Auto-Fill Zoom Meeting Mode Active</span>
+                    <span>Zoom class provisioning enabled</span>
                   </div>
                   <p className="text-[11px] text-[var(--text-muted)] leading-relaxed">
-                    Meeting URL, Meeting ID aur Passcode aapke connected Zoom account se automatically generate honge. Save karte hi details auto-fill ho jayengi!
+                    Batch save hone par fake meeting details generate nahi hongi. Is batch ki har scheduled class ke liye connected Zoom OAuth account se a separate real meeting create hogi.
                   </p>
                 </div>
               ) : (

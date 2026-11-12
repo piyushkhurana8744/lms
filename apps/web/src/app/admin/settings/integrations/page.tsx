@@ -12,14 +12,25 @@ import {
   Trash2,
   Video,
   GraduationCap,
-  Layers
+  Layers,
+  UserCheck,
+  ShieldAlert,
+  ShieldCheck,
+  Plus,
+  X
 } from 'lucide-react';
-import { IIntegrationConnectionDTO, IProviderMetadataDTO } from '@edtech/types';
+import { IIntegrationConnectionDTO, IProviderMetadataDTO, ITrainerZoomAccountDTO } from '@edtech/types';
 
 export default function IntegrationsSettingsPage() {
   const { hasAnyPermission } = useAuth();
   const [providers, setProviders] = useState<IProviderMetadataDTO[]>([]);
   const [connections, setConnections] = useState<IIntegrationConnectionDTO[]>([]);
+  const [trainerAccounts, setTrainerAccounts] = useState<ITrainerZoomAccountDTO[]>([]);
+  const [trainersList, setTrainersList] = useState<Array<{ id: string; name: string; email: string }>>([]);
+  const [selectedTrainerId, setSelectedTrainerId] = useState('');
+  const [zoomIdentifierInput, setZoomIdentifierInput] = useState('');
+  const [isMappingModalOpen, setIsMappingModalOpen] = useState(false);
+  const [mappingLoading, setMappingLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [healthStatus, setHealthStatus] = useState<Record<string, { healthy: boolean; message?: string }>>({});
@@ -33,9 +44,11 @@ export default function IntegrationsSettingsPage() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [provRes, connRes] = await Promise.all([
+      const [provRes, connRes, trainersRes, usersRes] = await Promise.all([
         fetch('/api/v1/integrations/providers'),
-        fetch('/api/v1/integrations/connections')
+        fetch('/api/v1/integrations/connections'),
+        fetch('/api/v1/integrations/zoom/trainers'),
+        fetch('/api/v1/users?role=INSTRUCTOR&limit=100')
       ]);
 
       if (provRes.ok) {
@@ -46,6 +59,16 @@ export default function IntegrationsSettingsPage() {
       if (connRes.ok) {
         const cData = await connRes.json();
         setConnections(cData.data || []);
+      }
+
+      if (trainersRes.ok) {
+        const tData = await trainersRes.json();
+        setTrainerAccounts(tData.data || []);
+      }
+
+      if (usersRes.ok) {
+        const uData = await usersRes.json();
+        setTrainersList((uData.data || []).map((u: any) => ({ id: u._id || u.id, name: u.name, email: u.email })));
       }
     } catch (err) {
       console.error('Failed to fetch integrations data', err);
@@ -120,6 +143,68 @@ export default function IntegrationsSettingsPage() {
     }
   };
 
+  const handleMapTrainer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedTrainerId || !zoomIdentifierInput.trim()) return;
+    try {
+      setMappingLoading(true);
+      setFeedback(null);
+      const res = await fetch(`/api/v1/integrations/zoom/trainers/${selectedTrainerId}/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ zoomIdentifier: zoomIdentifierInput.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Failed to verify and map Zoom trainer account');
+      setFeedback({
+        type: 'success',
+        message: `Trainer mapped successfully as ${data.data?.isHostEligible ? 'Licensed Host' : `Ineligible (${data.data?.ineligibilityReason})`}.`
+      });
+      setIsMappingModalOpen(false);
+      setSelectedTrainerId('');
+      setZoomIdentifierInput('');
+      await fetchData();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setMappingLoading(false);
+    }
+  };
+
+  const handleSyncTrainers = async () => {
+    try {
+      setActionLoading('sync-trainers');
+      setFeedback(null);
+      const res = await fetch('/api/v1/integrations/zoom/trainers/sync', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Sync failed');
+      setFeedback({
+        type: 'success',
+        message: `Synchronized ${data.data?.synced || 0} trainer Zoom accounts (${data.data?.eligible || 0} eligible licensed hosts).`
+      });
+      await fetchData();
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleDeleteTrainerAccount = async (userId: string) => {
+    try {
+      setActionLoading(`delete-trainer-${userId}`);
+      const res = await fetch(`/api/v1/integrations/zoom/trainers/${userId}`, { method: 'DELETE' });
+      if (res.ok) {
+        setFeedback({ type: 'success', message: 'Trainer Zoom account mapping removed.' });
+        await fetchData();
+      }
+    } catch (err: any) {
+      setFeedback({ type: 'error', message: err.message });
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const getConnectionForProvider = (providerName: string) => {
     return connections.find((c) => c.provider === providerName);
   };
@@ -178,11 +263,13 @@ export default function IntegrationsSettingsPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {providers.map((p) => {
             const conn = getConnectionForProvider(p.provider);
+            const isTestMode = Boolean((conn as any)?.metadata?.isDemo) || conn?.status === 'DEMO';
+            // Test mode describes the adapter, not the connection lifecycle state.
+            // A deterministic CONNECTED connection should still render Connected.
             const isConnected = conn && conn.status === 'CONNECTED';
             const isReauth = conn && ['REAUTH_REQUIRED', 'RECONNECT_REQUIRED', 'MISSING_SCOPE', 'EXPIRED'].includes(conn.status);
             const isError = conn && conn.status === 'ERROR';
             const health = conn ? healthStatus[conn.id] : null;
-            const isTestMode = Boolean((conn as any)?.metadata?.isDemo);
             const setupRequired = p.configurationStatus === 'SETUP_REQUIRED';
             const reauthLabel = conn?.status === 'MISSING_SCOPE' ? 'Missing Scope'
               : conn?.status === 'RECONNECT_REQUIRED' ? 'Reconnect Required'
@@ -344,6 +431,192 @@ export default function IntegrationsSettingsPage() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Multi-Trainer Zoom Host Management Section */}
+      <div className="glass-card rounded-2xl border border-[var(--brand-border)] p-6 space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Video className="w-5 h-5 text-blue-500" />
+              <h2 className="text-lg font-bold text-[var(--brand-text)]">
+                Trainer Zoom Host Management
+              </h2>
+            </div>
+            <p className="text-xs text-[var(--text-muted)] mt-1">
+              Institute-managed multi-trainer Zoom hosting. Map verified Zoom host accounts to LMS trainers to automate individual meeting ownership and prevent host collisions.
+            </p>
+          </div>
+          {canManage && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSyncTrainers}
+                disabled={actionLoading === 'sync-trainers'}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-[var(--brand-border)] text-xs font-semibold hover:bg-[var(--bg-surface-elevated)] transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${actionLoading === 'sync-trainers' ? 'animate-spin' : ''}`} />
+                <span>Sync Licenses</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsMappingModalOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#BE1E2E] text-white text-xs font-bold shadow hover:bg-[#a61725] transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Map Trainer Account</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {trainerAccounts.length === 0 ? (
+          <div className="p-8 text-center rounded-xl bg-[var(--bg-surface-elevated)] border border-[var(--brand-border)] space-y-2">
+            <UserCheck className="w-8 h-8 mx-auto text-[var(--text-muted)] opacity-60" />
+            <p className="text-xs font-medium text-[var(--brand-text)]">No trainer Zoom host accounts mapped yet</p>
+            <p className="text-[11px] text-[var(--text-muted)]">
+              Map your faculty instructors to their Licensed institute Zoom accounts to enable multi-trainer live class automation.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto border border-[var(--brand-border)] rounded-xl">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-[var(--bg-surface-elevated)] text-[var(--text-muted)] border-b border-[var(--brand-border)]">
+                <tr>
+                  <th className="px-4 py-3 font-semibold">LMS Trainer</th>
+                  <th className="px-4 py-3 font-semibold">Zoom Host Email & ID</th>
+                  <th className="px-4 py-3 font-semibold">License</th>
+                  <th className="px-4 py-3 font-semibold">Host Eligibility</th>
+                  <th className="px-4 py-3 font-semibold">Last Synced</th>
+                  {canManage && <th className="px-4 py-3 font-semibold text-right">Actions</th>}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--brand-border)]">
+                {trainerAccounts.map((t) => (
+                  <tr key={t.id} className="hover:bg-[var(--bg-surface-elevated)]/50 transition-colors">
+                    <td className="px-4 py-3">
+                      <div className="font-semibold text-[var(--brand-text)]">{t.trainerName || 'Instructor'}</div>
+                      <div className="text-[10px] text-[var(--text-muted)]">{t.trainerEmail}</div>
+                    </td>
+                    <td className="px-4 py-3 font-mono">
+                      <div className="text-[var(--brand-text)]">{t.zoomEmail}</div>
+                      <div className="text-[10px] text-[var(--text-muted)]">ID: {t.zoomUserId}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold ${t.licenseType === 'LICENSED' ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/20' : 'bg-amber-500/10 text-amber-600 border border-amber-500/20'}`}>
+                        {t.licenseType}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {t.isHostEligible ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600">
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Eligible Host
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-600" title={t.ineligibilityReason || 'Ineligible'}>
+                          <ShieldAlert className="w-3.5 h-3.5" />
+                          {t.ineligibilityReason || 'Ineligible'}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-[11px] text-[var(--text-muted)]">
+                      {t.lastSyncedAt ? new Date(t.lastSyncedAt).toLocaleString() : 'Never'}
+                    </td>
+                    {canManage && (
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteTrainerAccount(t.userId)}
+                          disabled={actionLoading === `delete-trainer-${t.userId}`}
+                          className="p-1 rounded text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-50"
+                          title="Unmap trainer Zoom account"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Mapping Modal */}
+      {isMappingModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md bg-[var(--bg-surface)] border border-[var(--brand-border)] rounded-2xl shadow-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-base font-bold text-[var(--brand-text)]">
+                Map Trainer Zoom Host Account
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsMappingModalOpen(false)}
+                className="text-[var(--text-muted)] hover:text-[var(--brand-text)]"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleMapTrainer} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-[var(--brand-text)] mb-1">
+                  Select Faculty Instructor
+                </label>
+                <select
+                  value={selectedTrainerId}
+                  onChange={(e) => setSelectedTrainerId(e.target.value)}
+                  required
+                  className="w-full text-xs rounded-xl border border-[var(--brand-border)] bg-[var(--bg-surface-elevated)] p-2.5 text-[var(--brand-text)]"
+                >
+                  <option value="">-- Choose Instructor --</option>
+                  {trainersList.map((tr) => (
+                    <option key={tr.id} value={tr.id}>
+                      {tr.name} ({tr.email})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[var(--brand-text)] mb-1">
+                  Zoom User ID or Account Email
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. rahul.sharma@didm.in or kd984hfs84jhf"
+                  value={zoomIdentifierInput}
+                  onChange={(e) => setZoomIdentifierInput(e.target.value)}
+                  required
+                  className="w-full text-xs rounded-xl border border-[var(--brand-border)] bg-[var(--bg-surface-elevated)] p-2.5 text-[var(--brand-text)] font-mono"
+                />
+                <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                  The user must belong to your institute Zoom account. The system will verify license status against the Zoom API.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsMappingModalOpen(false)}
+                  className="px-3 py-2 rounded-xl border border-[var(--brand-border)] text-xs font-semibold hover:bg-[var(--bg-surface-elevated)] text-[var(--brand-text)]"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={mappingLoading}
+                  className="px-4 py-2 rounded-xl bg-[#BE1E2E] text-white text-xs font-bold shadow hover:bg-[#a61725] transition-colors disabled:opacity-50"
+                >
+                  {mappingLoading ? 'Verifying with Zoom…' : 'Verify & Bind Account'}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
 

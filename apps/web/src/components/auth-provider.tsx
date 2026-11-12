@@ -3,19 +3,49 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { IUser, IAuthContext } from '@edtech/types';
 import { hasPermission as evaluatePermission } from '@edtech/permissions';
+import { sanitizeReturnUrl } from '@edtech/utils';
+import { useQueryClient } from '@tanstack/react-query';
+
+let refreshInFlight: Promise<boolean> | null = null;
+
+async function refreshSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = fetch('/api/v1/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin'
+    })
+      .then((response) => response.ok)
+      .catch(() => false)
+      .finally(() => { refreshInFlight = null; });
+  }
+  return refreshInFlight;
+}
 
 const AuthContext = createContext<IAuthContext | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const queryClient = useQueryClient();
   const [user, setUser] = useState<IUser | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   // Fetch Current Authenticated User Status
   const fetchMe = useCallback(async () => {
     try {
-      const res = await fetch('/api/v1/auth/me', {
-        headers: { 'Content-Type': 'application/json' }
+      let res = await fetch('/api/v1/auth/me', {
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin'
       });
+
+      if (res.status === 401) {
+        await refreshSession();
+        // Retry even when this tab lost a concurrent refresh race: another tab
+        // may already have installed the rotated cookies for the shared origin.
+        res = await fetch('/api/v1/auth/me', {
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin'
+        });
+      }
 
       if (res.ok) {
         const json = await res.json();
@@ -24,9 +54,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
       }
-      setUser(null);
+      if (res.status === 401 || res.status === 403) setUser(null);
     } catch {
-      setUser(null);
+      // Preserve an already hydrated identity during a transient network
+      // failure. Initial hydration still completes without inventing auth.
     } finally {
       setIsLoading(false);
     }
@@ -56,15 +87,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const res = await fetch('/api/v1/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
         body: JSON.stringify(credentials)
       });
 
-      const json = await res.json();
+      const responseText = await res.text();
+      let json: any = null;
+      try {
+        json = responseText ? JSON.parse(responseText) : null;
+      } catch {
+        // A proxy or an unavailable API can return an HTML/plain-text 5xx page.
+        // Do not expose a JSON parser exception as if it were a credential error.
+      }
+
       if (!res.ok || !json.success) {
-        throw new Error(json.error?.message || 'Login failed');
+        if (json?.error?.message) {
+          throw new Error(json.error.message);
+        }
+        if (res.status === 429) {
+          throw new Error('Too many login attempts. Please wait a few minutes and try again.');
+        }
+        if (res.status >= 500) {
+          throw new Error('Login service is temporarily unavailable. Your email and password could not be verified; please try again.');
+        }
+        throw new Error('Login failed. Please check your email and password.');
       }
 
       setUser(json.data.user);
+      queryClient.clear();
       return json.data.user;
     } finally {
       setIsLoading(false);
@@ -74,11 +124,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = async () => {
     setIsLoading(true);
     try {
-      await fetch('/api/v1/auth/logout', { method: 'POST' });
+      await fetch('/api/v1/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin'
+      });
     } catch {
       // Ignore network errors on logout, proceed with client cleanup
     } finally {
       setUser(null);
+      queryClient.clear();
       try {
         if (typeof window !== 'undefined') {
           window.localStorage.removeItem('auth_token');
@@ -89,29 +143,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       } catch {}
       setIsLoading(false);
       if (typeof window !== 'undefined') {
-        window.location.href = '/login';
+        window.location.replace('/login?loggedOut=1');
       }
     }
   };
 
   const refresh = async () => {
-    try {
-      const res = await fetch('/api/v1/auth/refresh', { method: 'POST' });
-      if (res.ok) {
-        await fetchMe();
-      }
-    } catch {
-      setUser(null);
-    }
+    if (await refreshSession()) await fetchMe();
+    else setUser(null);
   };
 
-  const impersonate = async (userId: string, reason = 'Platform superadmin support session') => {
+  const impersonate = async (
+    userId: string,
+    reason = 'Platform superadmin support session',
+    redirectTo?: string,
+    returnTo?: string
+  ) => {
     setIsLoading(true);
     try {
+      const currentPath =
+        returnTo ||
+        (typeof window !== 'undefined'
+          ? `${window.location.pathname}${window.location.search}`
+          : '/platform');
+
       const res = await fetch('/api/v1/platform/impersonation/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ targetUserId: userId, reason })
+        credentials: 'same-origin',
+        body: JSON.stringify({ targetUserId: userId, reason, returnTo: currentPath })
       });
 
       const json = await res.json();
@@ -119,25 +179,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error(json.error?.message || 'Impersonation failed');
       }
 
+      queryClient.clear();
+      if (typeof window !== 'undefined' && redirectTo) {
+        window.location.replace(redirectTo);
+        return;
+      }
       await fetchMe();
     } finally {
       setIsLoading(false);
     }
   };
 
-  const exitImpersonation = async () => {
+  const exitImpersonation = async (redirectTo?: string) => {
     setIsLoading(true);
     try {
       const res = await fetch('/api/v1/platform/impersonation/exit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(redirectTo ? { returnTo: redirectTo } : {})
       });
 
-      const json = await res.json();
+      const json = await res.json().catch(() => ({}));
       if (!res.ok || !json.success) {
-        throw new Error(json.error?.message || 'Failed to exit impersonation');
+        throw new Error(json.error?.message || json.message || 'Failed to exit impersonation');
       }
 
+      const serverReturnTo = json.data?.returnTo;
+      const targetDestination = sanitizeReturnUrl(
+        serverReturnTo || user?.impersonationReturnTo || redirectTo || '/platform',
+        '/platform'
+      );
+
+      queryClient.clear();
+      if (typeof window !== 'undefined') {
+        window.location.replace(targetDestination);
+        return;
+      }
       await fetchMe();
     } finally {
       setIsLoading(false);

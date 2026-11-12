@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { consumeNotificationIntent } from './notification-system-test-helper';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   StudentLifecycleModel,
@@ -65,7 +66,7 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
         isPlatformContext: false,
         allowedTenantIds: [tenantId.toString()]
       },
-      fn
+      async () => await fn()
     );
 
   const runAsForeign = <T>(fn: () => Promise<T>) =>
@@ -76,7 +77,7 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
         isPlatformContext: false,
         allowedTenantIds: [foreignTenantId.toString()]
       },
-      fn
+      async () => await fn()
     );
 
   let enrollmentDoc: any;
@@ -216,16 +217,18 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
     ]);
 
     // Seed Enrollment
-    enrollmentDoc = await EnrollmentModel.create({
-      tenantId,
-      studentId: studentUserId,
-      courseId,
-      status: 'ACTIVE',
-      enrolledAt: new Date('2026-10-01T00:00:00Z'),
-      progressPercent: 0,
-      completedLessons: 0,
-      totalLessons: 10
-    });
+    enrollmentDoc = await runAsAdmin(() =>
+      EnrollmentModel.create({
+        tenantId,
+        studentId: studentUserId,
+        courseId,
+        status: 'ACTIVE',
+        enrolledAt: new Date('2026-10-01T00:00:00Z'),
+        progressPercent: 0,
+        completedLessons: 0,
+        totalLessons: 10
+      })
+    );
   });
 
   afterAll(async () => {
@@ -281,10 +284,12 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
     expect(events[0].eventType).toBe('ACTIVATED');
 
     // Verify Notification Intent outbox
-    const intents = await NotificationIntentModel.find({
-      sourceId: lifecycleDoc._id.toString(),
-      type: 'student.activated'
-    });
+    const intents = await runAsAdmin(() =>
+      NotificationIntentModel.find({
+        sourceId: lifecycleDoc._id.toString(),
+        type: 'student.activated'
+      })
+    );
     expect(intents).toHaveLength(1);
     expect(intents[0].recipientUserId.toString()).toBe(studentUserId.toString());
   });
@@ -302,7 +307,7 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
     expect(replay.revision).toBe(1);
     // No duplicate events or notification intents
     expect(await StudentLifecycleEventModel.countDocuments({ lifecycleId: lifecycleDoc._id, eventType: 'ACTIVATED' })).toBe(1);
-    expect(await NotificationIntentModel.countDocuments({ sourceId: lifecycleDoc._id.toString(), type: 'student.activated' })).toBe(1);
+    expect(await runAsAdmin(() => NotificationIntentModel.countDocuments({ sourceId: lifecycleDoc._id.toString(), type: 'student.activated' }))).toBe(1);
   });
 
   it('4. Rejects invalid direct status transitions and cross-course transfer attempts', async () => {
@@ -320,22 +325,24 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
 
   it('5. Executes same-course Batch Transfer (Batch A -> Batch B) preserving all historical data and finance', async () => {
     // Setup historical records across frozen domains before transfer
-    const classBefore = await ClassModel.create({
-      tenantId,
-      name: 'Class A1',
-      classCode: 'CLA-1',
-      courseId,
-      batchId: batchAId,
-      mode: 'ONLINE',
-      capacity: 30,
-      enrolledCount: 1,
-      enrolledStudents: [{ studentId: studentUserId, status: 'ENROLLED', enrolledAt: new Date('2026-10-01') }],
-      status: 'SCHEDULED',
-      startDate: new Date('2026-10-05T10:00:00Z'),
-      timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
-      daysOfWeek: ['MONDAY'],
-      showOnWebsite: false
-    });
+    const classBefore = await runAsAdmin(() =>
+      ClassModel.create({
+        tenantId,
+        name: 'Class A1',
+        classCode: 'CLA-1',
+        courseId,
+        batchId: batchAId,
+        mode: 'ONLINE',
+        capacity: 30,
+        enrolledCount: 1,
+        enrolledStudents: [{ studentId: studentUserId, status: 'ENROLLED', enrolledAt: new Date('2026-10-01') }],
+        status: 'SCHEDULED',
+        startDate: new Date('2026-10-05T10:00:00Z'),
+        timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
+        daysOfWeek: ['MONDAY'],
+        showOnWebsite: false
+      })
+    );
 
     const feePlan = await StudentFeePlanModel.create({
       tenantId,
@@ -436,22 +443,24 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
   });
 
   it('7. Excludes student on hold from attendance roster generation during hold period', async () => {
-    const classDuringHold = await ClassModel.create({
-      tenantId,
-      name: 'Class During Hold',
-      classCode: 'CDH-1',
-      courseId,
-      batchId: batchBId,
-      mode: 'ONLINE',
-      capacity: 30,
-      enrolledCount: 1,
-      enrolledStudents: [{ studentId: studentUserId, status: 'ENROLLED', enrolledAt: new Date('2026-10-01') }],
-      status: 'SCHEDULED',
-      startDate: new Date('2026-10-15T10:00:00Z'),
-      timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
-      daysOfWeek: ['THURSDAY'],
-      showOnWebsite: false
-    });
+    const classDuringHold = await runAsAdmin(() =>
+      ClassModel.create({
+        tenantId,
+        name: 'Class During Hold',
+        classCode: 'CDH-1',
+        courseId,
+        batchId: batchBId,
+        mode: 'ONLINE',
+        capacity: 30,
+        enrolledCount: 1,
+        enrolledStudents: [{ studentId: studentUserId, status: 'ENROLLED', enrolledAt: new Date('2026-10-01') }],
+        status: 'SCHEDULED',
+        startDate: new Date('2026-10-15T10:00:00Z'),
+        timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
+        daysOfWeek: ['THURSDAY'],
+        showOnWebsite: false
+      })
+    );
 
     const roster = await runAsAdmin(() =>
       AttendanceService.open(classDuringHold._id.toString(), adminActor)
@@ -463,7 +472,10 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
   });
 
   it('8. Resumes student to ACTIVE, archives hold history, and restores future attendance eligibility without backfilling absences', async () => {
-    const resumeDate = new Date('2026-10-20T00:00:00Z');
+    // Activation is intentionally stamped with the real transaction time by the
+    // production service. Keep this proof future-relative so it does not turn
+    // into a historical eligibility assertion as the calendar advances.
+    const resumeDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const resumed = await runAsAdmin(() =>
       StudentLifecycleService.resumeStudent(
         lifecycleDoc._id.toString(),
@@ -479,22 +491,24 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
     expect(resumed.revision).toBe(4);
 
     // Post-resume class attendance roster inclusion
-    const classAfterResume = await ClassModel.create({
-      tenantId,
-      name: 'Class After Resume',
-      classCode: 'CAR-1',
-      courseId,
-      batchId: batchBId,
-      mode: 'ONLINE',
-      capacity: 30,
-      enrolledCount: 1,
-      enrolledStudents: [{ studentId: studentUserId, status: 'ENROLLED', enrolledAt: new Date('2026-10-01') }],
-      status: 'SCHEDULED',
-      startDate: new Date('2026-10-25T10:00:00Z'),
-      timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
-      daysOfWeek: ['SUNDAY'],
-      showOnWebsite: false
-    });
+    const classAfterResume = await runAsAdmin(() =>
+      ClassModel.create({
+        tenantId,
+        name: 'Class After Resume',
+        classCode: 'CAR-1',
+        courseId,
+        batchId: batchBId,
+        mode: 'ONLINE',
+        capacity: 30,
+        enrolledCount: 1,
+        enrolledStudents: [{ studentId: studentUserId, status: 'ENROLLED', enrolledAt: new Date('2026-10-01') }],
+        status: 'SCHEDULED',
+        startDate: new Date(resumeDate.getTime() + 24 * 60 * 60 * 1000),
+        timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
+        daysOfWeek: ['SUNDAY'],
+        showOnWebsite: false
+      })
+    );
 
     const postRoster = await runAsAdmin(() =>
       AttendanceService.open(classAfterResume._id.toString(), adminActor)
@@ -519,14 +533,16 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
 
   it('10. Marks COMPLETED upon 100% course completion (independent of certificate issuance)', async () => {
     // Set enrollment to completed (Phase 9 evidence)
-    await EnrollmentModel.findByIdAndUpdate(enrollmentDoc._id, {
-      $set: {
-        status: 'COMPLETED',
-        progressPercent: 100,
-        completedLessons: 10,
-        completedAt: new Date('2026-10-30T00:00:00Z')
-      }
-    });
+    await runAsAdmin(() =>
+      EnrollmentModel.findByIdAndUpdate(enrollmentDoc._id, {
+        $set: {
+          status: 'COMPLETED',
+          progressPercent: 100,
+          completedLessons: 10,
+          completedAt: new Date('2026-10-30T00:00:00Z')
+        }
+      })
+    );
 
     const completed = await runAsAdmin(() =>
       StudentLifecycleService.completeStudent(
@@ -541,10 +557,12 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
     expect(completed.revision).toBe(5);
 
     // Verify Notification Intent
-    const notifs = await NotificationIntentModel.find({
-      sourceId: lifecycleDoc._id.toString(),
-      type: 'student.completed'
-    });
+    const notifs = await runAsAdmin(() =>
+      NotificationIntentModel.find({
+        sourceId: lifecycleDoc._id.toString(),
+        type: 'student.completed'
+      })
+    );
     expect(notifs).toHaveLength(1);
 
     // Completed lifecycle is terminal: re-complete is idempotent
@@ -561,31 +579,34 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
   it('11. Handles Withdrawal, dropout, and Readmission into a new Lifecycle Episode', async () => {
     // Create new student for readmission test
     const student2Id = new mongoose.Types.ObjectId();
-    await UserModel.create({
-      _id: student2Id,
-      tenantId,
-      allowedTenantIds: [tenantId],
-      name: 'Student Two',
-      email: 'student2@inst.test',
-      passwordHash: 'hash',
-      status: 'ACTIVE'
-    });
-    await OrganizationMemberModel.create({
-      tenantId,
-      userId: student2Id,
-      role: 'STUDENT',
-      status: 'ACTIVE',
-      joinedAt: new Date()
-    });
-    const enr2 = await EnrollmentModel.create({
-      tenantId,
-      studentId: student2Id,
-      courseId,
-      status: 'ACTIVE',
-      enrolledAt: new Date(),
-      progressPercent: 20,
-      completedLessons: 2,
-      totalLessons: 10
+    let enr2: any;
+    await runAsAdmin(async () => {
+      await UserModel.create({
+        _id: student2Id,
+        tenantId,
+        allowedTenantIds: [tenantId],
+        name: 'Student Two',
+        email: 'student2@inst.test',
+        passwordHash: 'hash',
+        status: 'ACTIVE'
+      });
+      await OrganizationMemberModel.create({
+        tenantId,
+        userId: student2Id,
+        role: 'STUDENT',
+        status: 'ACTIVE',
+        joinedAt: new Date()
+      });
+      enr2 = await EnrollmentModel.create({
+        tenantId,
+        studentId: student2Id,
+        courseId,
+        status: 'ACTIVE',
+        enrolledAt: new Date(),
+        progressPercent: 20,
+        completedLessons: 2,
+        totalLessons: 10
+      });
     });
 
     const lc2 = await runAsAdmin(() =>
@@ -728,13 +749,13 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(10);
 
     // Verify invariants: Exactly ONE User, ONE Member, ONE Enrollment, and ONE Lifecycle
-    const createdUser = await UserModel.findOne({ tenantId, email: 'race.candidate@inst.test' });
+    const createdUser = await runAsAdmin(() => UserModel.findOne({ tenantId, email: 'race.candidate@inst.test' }));
     expect(createdUser).toBeTruthy();
-    expect(await UserModel.countDocuments({ tenantId, email: 'race.candidate@inst.test' })).toBe(1);
-    expect(await OrganizationMemberModel.countDocuments({ tenantId, userId: createdUser!._id })).toBe(1);
-    expect(await EnrollmentModel.countDocuments({ tenantId, studentId: createdUser!._id })).toBe(1);
+    expect(await runAsAdmin(() => UserModel.countDocuments({ tenantId, email: 'race.candidate@inst.test' }))).toBe(1);
+    expect(await runAsAdmin(() => OrganizationMemberModel.countDocuments({ tenantId, userId: createdUser!._id }))).toBe(1);
+    expect(await runAsAdmin(() => EnrollmentModel.countDocuments({ tenantId, studentId: createdUser!._id }))).toBe(1);
     expect(await StudentLifecycleModel.countDocuments({ tenantId, studentUserId: createdUser!._id })).toBe(1);
-  });
+  }, 30000);
 
   it('13. 20-Way Concurrent Student Number Sequence Allocation produces 20 unique numbers with zero collisions', async () => {
     const results = await Promise.all(
@@ -753,28 +774,31 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
 
   it('14. Conflicting destination batch transfer race (Batch B vs Batch C) produces exactly 1 winner and 1 conflict', async () => {
     const student3Id = new mongoose.Types.ObjectId();
-    await UserModel.create({
-      _id: student3Id,
-      tenantId,
-      allowedTenantIds: [tenantId],
-      name: 'Student Three',
-      email: 'student3@inst.test',
-      passwordHash: 'hash',
-      status: 'ACTIVE'
-    });
-    await OrganizationMemberModel.create({
-      tenantId,
-      userId: student3Id,
-      role: 'STUDENT',
-      status: 'ACTIVE',
-      joinedAt: new Date()
-    });
-    const enr3 = await EnrollmentModel.create({
-      tenantId,
-      studentId: student3Id,
-      courseId,
-      status: 'ACTIVE',
-      enrolledAt: new Date()
+    let enr3: any;
+    await runAsAdmin(async () => {
+      await UserModel.create({
+        _id: student3Id,
+        tenantId,
+        allowedTenantIds: [tenantId],
+        name: 'Student Three',
+        email: 'student3@inst.test',
+        passwordHash: 'hash',
+        status: 'ACTIVE'
+      });
+      await OrganizationMemberModel.create({
+        tenantId,
+        userId: student3Id,
+        role: 'STUDENT',
+        status: 'ACTIVE',
+        joinedAt: new Date()
+      });
+      enr3 = await EnrollmentModel.create({
+        tenantId,
+        studentId: student3Id,
+        courseId,
+        status: 'ACTIVE',
+        enrolledAt: new Date()
+      });
     });
 
     const lc3 = await runAsAdmin(() =>
@@ -822,28 +846,31 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
   it('15. Recovers from Redis outage during notification handoff without corrupting lifecycle state', async () => {
     // Setup student lifecycle for notification outage proof
     const student4Id = new mongoose.Types.ObjectId();
-    await UserModel.create({
-      _id: student4Id,
-      tenantId,
-      allowedTenantIds: [tenantId],
-      name: 'Outage Student',
-      email: 'outage@inst.test',
-      passwordHash: 'hash',
-      status: 'ACTIVE'
-    });
-    await OrganizationMemberModel.create({
-      tenantId,
-      userId: student4Id,
-      role: 'STUDENT',
-      status: 'ACTIVE',
-      joinedAt: new Date()
-    });
-    const enr4 = await EnrollmentModel.create({
-      tenantId,
-      studentId: student4Id,
-      courseId,
-      status: 'ACTIVE',
-      enrolledAt: new Date()
+    let enr4: any;
+    await runAsAdmin(async () => {
+      await UserModel.create({
+        _id: student4Id,
+        tenantId,
+        allowedTenantIds: [tenantId],
+        name: 'Outage Student',
+        email: 'outage@inst.test',
+        passwordHash: 'hash',
+        status: 'ACTIVE'
+      });
+      await OrganizationMemberModel.create({
+        tenantId,
+        userId: student4Id,
+        role: 'STUDENT',
+        status: 'ACTIVE',
+        joinedAt: new Date()
+      });
+      enr4 = await EnrollmentModel.create({
+        tenantId,
+        studentId: student4Id,
+        courseId,
+        status: 'ACTIVE',
+        enrolledAt: new Date()
+      });
     });
 
     const lc4 = await runAsAdmin(() =>
@@ -865,21 +892,23 @@ suite('Phase 16 Student Lifecycle & Academic Journey MongoDB Integration', () =>
     // Invariant: Lifecycle operation committed successfully in MongoDB
     expect(activated.currentStatus).toBe('ACTIVE');
 
-    const intent = await NotificationIntentModel.findOne({
-      sourceId: lc4._id.toString(),
-      type: 'student.activated'
-    });
+    const intent = await runAsAdmin(() =>
+      NotificationIntentModel.findOne({
+        sourceId: lc4._id.toString(),
+        type: 'student.activated'
+      })
+    );
     expect(intent).toBeTruthy();
     expect(intent!.status).toBe('PENDING');
 
     // Attempt consumption while handoff is failing -> must fail safely without changing lifecycle
-    await expect(NotificationService.consumeOutboxEvent(intent!.eventId)).rejects.toThrow();
+    await expect(consumeNotificationIntent(intent!.eventId)).rejects.toThrow();
 
     // 2. Restore Redis / notification service
     setNotificationHandoffFailure(false);
 
     // 3. Recovery worker sweeps and processes pending intent
-    const consumed = await NotificationService.consumeOutboxEvent(intent!.eventId);
+    const consumed = await consumeNotificationIntent(intent!.eventId);
     expect(consumed?.status).toBe('PROCESSED');
 
     // Invariant: Lifecycle state in DB remained completely untouched during notification recovery

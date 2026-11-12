@@ -43,7 +43,8 @@ import {
   ChevronRight,
   ShieldCheck,
   PhoneForwarded,
-  UserPlus
+  UserPlus,
+  CreditCard
 } from 'lucide-react';
 
 export default function LeadDetailPage() {
@@ -78,10 +79,17 @@ export default function LeadDetailPage() {
   const [completeOutcome, setCompleteOutcome] = useState<FollowUpOutcome>('INTERESTED');
   const [completeOutcomeNote, setCompleteOutcomeNote] = useState('');
 
-  // Admission Form
+  // Admission Form & Credit Sheet
   const [admissionCourseId, setAdmissionCourseId] = useState('');
   const [admissionBatchId, setAdmissionBatchId] = useState('');
   const [admissionNotes, setAdmissionNotes] = useState('');
+  const [baseAmount, setBaseAmount] = useState<number | ''>('');
+  const [discountAmount, setDiscountAmount] = useState<number | ''>('');
+  const [discountReason, setDiscountReason] = useState('');
+  const [paidAmount, setPaidAmount] = useState<number | ''>('');
+  const [paymentMethod, setPaymentMethod] = useState<'UPI' | 'CASH' | 'BANK_TRANSFER' | 'CARD' | 'CHEQUE'>('UPI');
+  const [transactionReference, setTransactionReference] = useState('');
+  const [installmentsCount, setInstallmentsCount] = useState<number>(2);
 
   // Assign Counsellor Modal
   const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
@@ -740,6 +748,15 @@ export default function LeadDetailPage() {
                     courseId: admissionCourseId,
                     batchId: admissionBatchId || undefined,
                     notes: admissionNotes,
+                    feeDetails: baseAmount ? {
+                      baseAmount: Number(baseAmount),
+                      discountAmount: Number(discountAmount) || 0,
+                      discountReason: discountReason || undefined,
+                      paidAmount: Number(paidAmount) || 0,
+                      paymentMethod,
+                      transactionReference: transactionReference?.trim() || undefined,
+                      installmentsCount: Number(installmentsCount) || 1
+                    } : undefined,
                     applicant: {
                       fullName: lead.fullName,
                       phone: lead.phone,
@@ -782,6 +799,125 @@ export default function LeadDetailPage() {
                       ))}
                     </select>
                   </div>
+                </div>
+
+                {/* Credit Sheet & Payment Section */}
+                <div className="p-3.5 rounded-xl border border-[var(--brand-border)] bg-[var(--brand-background)]/50 space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-[var(--brand-border)]">
+                    <span className="font-extrabold text-xs text-[var(--brand-text)] flex items-center gap-1.5">
+                      <CreditCard className="w-3.5 h-3.5 text-[#BE1E2E]" /> Credit Sheet & Fee Schedule
+                    </span>
+                    <span className="text-[10px] text-[var(--text-muted)] font-mono">
+                      Auto-syncs to LMS Finance & Receipt
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label className="font-bold text-[var(--brand-text)]">Total Course Fee (₹)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="e.g. 45000"
+                        value={baseAmount}
+                        onChange={(e) => setBaseAmount(e.target.value ? Number(e.target.value) : '')}
+                        className="w-full px-3 py-2 rounded-xl bg-[var(--brand-background)] border border-[var(--brand-border)] text-xs font-semibold"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="font-bold text-[var(--brand-text)]">Discount / Concession (₹)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="e.g. 5000"
+                        value={discountAmount}
+                        onChange={(e) => setDiscountAmount(e.target.value ? Number(e.target.value) : '')}
+                        className="w-full px-3 py-2 rounded-xl bg-[var(--brand-background)] border border-[var(--brand-border)] text-xs font-semibold"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="font-bold text-[var(--brand-text)]">Token / Paid Today (₹)</label>
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="e.g. 10000"
+                        value={paidAmount}
+                        onChange={(e) => setPaidAmount(e.target.value ? Number(e.target.value) : '')}
+                        className="w-full px-3 py-2 rounded-xl bg-[var(--brand-background)] border border-[var(--brand-border)] text-xs font-semibold text-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label className="font-bold text-[var(--brand-text)]">Payment Mode</label>
+                      <select
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value as any)}
+                        className="w-full px-3 py-2 rounded-xl bg-[var(--brand-background)] border border-[var(--brand-border)] text-xs font-semibold"
+                      >
+                        <option value="UPI">UPI (Google Pay / PhonePe / Paytm)</option>
+                        <option value="CASH">Cash</option>
+                        <option value="BANK_TRANSFER">Bank Transfer (NEFT / IMPS)</option>
+                        <option value="CARD">Debit / Credit Card</option>
+                        <option value="CHEQUE">Cheque</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="font-bold text-[var(--brand-text)]">UTR / Cheque / Ref No.</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 493021948291"
+                        value={transactionReference}
+                        onChange={(e) => setTransactionReference(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl bg-[var(--brand-background)] border border-[var(--brand-border)] text-xs font-mono"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="font-bold text-[var(--brand-text)]">Installments Plan</label>
+                      <select
+                        value={installmentsCount}
+                        onChange={(e) => setInstallmentsCount(Number(e.target.value))}
+                        className="w-full px-3 py-2 rounded-xl bg-[var(--brand-background)] border border-[var(--brand-border)] text-xs font-semibold"
+                      >
+                        <option value="1">1 Installment (Full Settlement)</option>
+                        <option value="2">2 Installments (Monthly)</option>
+                        <option value="3">3 Installments (Monthly)</option>
+                        <option value="4">4 Installments (Monthly)</option>
+                        <option value="6">6 Installments (Monthly)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Dynamic Financial Summary Card */}
+                  {Number(baseAmount) > 0 && (
+                    <div className="p-2.5 rounded-lg bg-[var(--bg-surface-elevated)] border border-[var(--brand-border)] text-[11px] grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div>
+                        <span className="text-[var(--text-muted)] block">Net Payable:</span>
+                        <span className="font-extrabold text-[var(--brand-text)]">
+                          ₹{Math.max(0, (Number(baseAmount) || 0) - (Number(discountAmount) || 0)).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[var(--text-muted)] block">Immediate Credit:</span>
+                        <span className="font-extrabold text-emerald-500">
+                          ₹{(Number(paidAmount) || 0).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[var(--text-muted)] block">Balance Due:</span>
+                        <span className="font-extrabold text-[#BE1E2E]">
+                          ₹{Math.max(0, Math.max(0, (Number(baseAmount) || 0) - (Number(discountAmount) || 0)) - (Number(paidAmount) || 0)).toLocaleString('en-IN')}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[var(--text-muted)] block">Installments:</span>
+                        <span className="font-bold text-[var(--brand-text)]">
+                          {installmentsCount} {installmentsCount === 1 ? 'part' : 'parts'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-1">

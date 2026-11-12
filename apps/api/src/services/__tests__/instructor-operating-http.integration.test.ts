@@ -28,7 +28,7 @@ import {
   connectDatabase,
   disconnectDatabase
 } from '@edtech/database';
-import { signAccessToken } from '@edtech/utils';
+import { signAccessToken, tenantContextStorage } from '@edtech/utils';
 import { createApp } from '../../app';
 
 const suite = process.env.RUN_MONGO_INTEGRATION === '1' ? describe : describe.skip;
@@ -471,7 +471,11 @@ suite('Phase 17 Instructor OS real HTTP closure', () => {
     expect(grade.status).toBe(200);
     const stale = await request(tokens.InstructorA, 'PUT', `/api/v1/instructor/grading/${ids.submission}`, { score: 20, feedback: 'stale', expectedRevision: 0 });
     expect(stale.status).toBe(409);
-    expect((await AssessmentSubmissionModel.findById(ids.submission))?.score).toBe(80);
+    const sub = await tenantContextStorage.run(
+      { currentTenantId: ids.tenantA.toString(), isPlatformContext: false },
+      async () => await AssessmentSubmissionModel.findById(ids.submission)
+    );
+    expect(sub?.score).toBe(80);
 
     const availability = await request(tokens.InstructorA, 'PUT', '/api/v1/instructor/availability', { timezone: 'Asia/Kolkata', weeklyWindows: [], exceptions: [], expectedRevision: 0 });
     expect(availability.status).toBe(200);
@@ -479,7 +483,10 @@ suite('Phase 17 Instructor OS real HTTP closure', () => {
   });
 
   it('suppresses cancelled meeting URL and rejects attendance mutation', async () => {
-    await ClassModel.updateOne({ _id: ids.classA }, { $set: { status: 'CANCELLED' } });
+    await tenantContextStorage.run(
+      { currentTenantId: ids.tenantA.toString(), isPlatformContext: false },
+      async () => await ClassModel.updateOne({ _id: ids.classA }, { $set: { status: 'CANCELLED' } })
+    );
     const workspace = await request(tokens.InstructorA, 'GET', `/api/v1/instructor/classes/${ids.classA}`);
     expect(workspace.status).toBe(200);
     expect(workspace.json.data.class.meetingUrl).toBeUndefined();

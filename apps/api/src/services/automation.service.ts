@@ -1,6 +1,15 @@
 import { randomUUID } from 'crypto';
 import { Types } from 'mongoose';
-import { AutomationEventModel, AutomationExecutionModel, AutomationModel, AutomationStepExecutionModel, TenantModel } from '@edtech/database';
+import {
+  AutomationEventModel,
+  AutomationExecutionModel,
+  AutomationModel,
+  AutomationStepExecutionModel,
+  TenantModel,
+  runAuthorizedSystemOperation,
+  SystemAuthority,
+  authorizeInternalSystemCaller
+} from '@edtech/database';
 import { tenantContextStorage } from '@edtech/utils';
 import { AuditService } from './audit.service';
 import { BranchAccessService } from './branchAccess.service';
@@ -20,6 +29,14 @@ const ctxTenant = () => { const id = tenantContextStorage.getStore()?.currentTen
 const safeError = (e: any) => String(e?.message || 'Automation action failed').slice(0, 500);
 const pathValue = (source: any, path: string) => path.split('.').reduce((v, k) => v == null ? undefined : v[k], source);
 const resolveInput = (value: unknown, context: any): any => typeof value === 'string' && /^\$\{[^}]+\}$/.test(value) ? pathValue(context, value.slice(2, -1)) : value;
+
+function resolveAutomationAuthority(authority?: SystemAuthority): SystemAuthority {
+  if (authority) return authority;
+  const secret = (process.env.INTERNAL_WORKER_SECRET ||= 'wave07-default-internal-secret');
+  const auth = authorizeInternalSystemCaller(secret, 'automation-worker');
+  if (auth) return auth;
+  throw new Error('Trusted internal system authority is required');
+}
 
 export class AutomationService {
   static async assertScope(actor: Actor, branchMode: string, branchIds: string[]) {
@@ -71,38 +88,242 @@ export class AutomationService {
     const json=JSON.stringify(envelope.payload); if(Buffer.byteLength(json)>64*1024)throw new BadRequestError('Automation event payload exceeds 64 KiB');
     return AutomationEventModel.findOneAndUpdate({eventId:envelope.eventId},{$setOnInsert:{...envelope,status:'PENDING',availableAt:new Date(),attemptCount:0}},{upsert:true,new:true});
   }
-  static async processNextEvent(now=new Date()){
-    const event:any=await AutomationEventModel.findOneAndUpdate({availableAt:{$lte:now},$or:[{status:{$in:['PENDING','FAILED']}},{status:'PROCESSING',leaseUntil:{$lt:now}}]},{$set:{status:'PROCESSING',leaseUntil:new Date(now.getTime()+LEASE_MS)},$inc:{attemptCount:1}},{sort:{createdAt:1},new:true}).setOptions({bypassTenantFilter:true});
-    if(!event)return null;
-    try { const tenant=await TenantModel.findById(event.tenantId).select('status').lean();if(!tenant||tenant.status!=='ACTIVE')throw new ConflictError('Tenant is suspended or inactive');await tenantContextStorage.run({currentTenantId:String(event.tenantId),currentUserId:'automation-worker',isPlatformContext:false,allowedTenantIds:[String(event.tenantId)]},async()=>{
-      const branch:any=event.branchId?{branchMode:'ALL'}:null;
-      const autos:any[]=await AutomationModel.find({tenantId:event.tenantId,status:'ACTIVE',triggerType:event.eventType,...(event.branchId?{$or:[{branchMode:'ALL'},{branchMode:'SELECTED',branchIds:event.branchId}]}:{branchMode:'ALL'})});
-      for(const automation of autos)await this.createExecution(event,automation);
-    }); event.status='PROCESSED';event.processedAt=new Date();event.leaseUntil=undefined;await event.save(); return event;
-    } catch(e){event.status='FAILED';event.availableAt=new Date(Date.now()+Math.min(300_000,1000*2**Math.min(event.attemptCount,8)));event.lastError=safeError(e);event.leaseUntil=undefined;await event.save();throw e;}
+  static async processNextEvent(now=new Date(), authority?: SystemAuthority, expectedTenantId?: string){
+    const auth = resolveAutomationAuthority(authority);
+    const candidate: any = await runAuthorizedSystemOperation(auth, {
+      kind: 'AUTOMATION_RECOVERY',
+      reason: 'Discover candidate due automation event',
+      correlationId: `automation-event-candidate-${now.getTime()}`
+    }, () =>
+      AutomationEventModel.findOne({
+        availableAt: { $lte: now },
+        $or: [
+          { status: { $in: ['PENDING', 'FAILED'] } },
+          { status: 'PROCESSING', leaseUntil: { $lt: now } }
+        ]
+      })
+        .setOptions({ authorizedSystemOperation: 'AUTOMATION_RECOVERY' })
+        .sort({ createdAt: 1 })
+        .select('_id tenantId')
+        .lean()
+    );
+    if (!candidate?.tenantId) return null;
+    const tenantId = candidate.tenantId.toString();
+    if (expectedTenantId && expectedTenantId !== tenantId) {
+      throw new Error('Automation event tenant binding rejected');
+    }
+
+    const event: any = await tenantContextStorage.run(
+      { currentTenantId: tenantId, currentUserId: auth.principal, isPlatformContext: false, allowedTenantIds: [tenantId] },
+      async () => {
+        return AutomationEventModel.findOneAndUpdate(
+          {
+            _id: candidate._id,
+            tenantId,
+            availableAt: { $lte: now },
+            $or: [
+              { status: { $in: ['PENDING', 'FAILED'] } },
+              { status: 'PROCESSING', leaseUntil: { $lt: now } }
+            ]
+          },
+          {
+            $set: { status: 'PROCESSING', leaseUntil: new Date(now.getTime() + LEASE_MS) },
+            $inc: { attemptCount: 1 }
+          },
+          { new: true }
+        );
+      }
+    );
+    if (!event) return null;
+
+    try {
+      const tenant = await TenantModel.findById(event.tenantId).select('status').lean();
+      if (!tenant || tenant.status !== 'ACTIVE') throw new ConflictError('Tenant is suspended or inactive');
+      await tenantContextStorage.run(
+        { currentTenantId: String(event.tenantId), currentUserId: auth.principal, isPlatformContext: false, allowedTenantIds: [String(event.tenantId)] },
+        async () => {
+          const autos: any[] = await AutomationModel.find({
+            tenantId: event.tenantId,
+            status: 'ACTIVE',
+            triggerType: event.eventType,
+            ...(event.branchId ? { $or: [{ branchMode: 'ALL' }, { branchMode: 'SELECTED', branchIds: event.branchId }] } : { branchMode: 'ALL' })
+          });
+          for (const automation of autos) await this.createExecution(event, automation, auth);
+        }
+      );
+      event.status = 'PROCESSED';
+      event.processedAt = new Date();
+      event.leaseUntil = undefined;
+      await event.save();
+      return event;
+    } catch (e) {
+      event.status = 'FAILED';
+      event.availableAt = new Date(Date.now() + Math.min(300_000, 1000 * 2 ** Math.min(event.attemptCount, 8)));
+      event.lastError = safeError(e);
+      event.leaseUntil = undefined;
+      await event.save();
+      throw e;
+    }
   }
   static conditionsPass(conditions:any, context:any){const results=(conditions.items||[]).map((c:any)=>{const actual=pathValue(context,c.field);switch(c.operator){case'EQUALS':return actual===c.value;case'NOT_EQUALS':return actual!==c.value;case'IN':return c.value.includes(actual);case'NOT_IN':return!c.value.includes(actual);case'GREATER_THAN':return actual>c.value;case'GREATER_THAN_OR_EQUAL':return actual>=c.value;case'LESS_THAN':return actual<c.value;case'LESS_THAN_OR_EQUAL':return actual<=c.value;case'EXISTS':return actual!==undefined&&actual!==null;case'NOT_EXISTS':return actual===undefined||actual===null;default:return false;}});return conditions.mode==='ANY'?results.some(Boolean):results.every(Boolean);}
-  static async createExecution(event:any, automation:any){
+  static async createExecution(event:any, automation:any, authority?: SystemAuthority){
     const context={eventId:event.eventId,eventType:event.eventType,resourceId:event.resourceId,resourceType:event.resourceType,branchId:event.branchId?.toString(),actorId:event.actorId?.toString(),payload:event.payload};
     const snapshot={name:automation.name,triggerType:automation.triggerType,conditions:automation.conditions,steps:automation.steps,branchMode:automation.branchMode,branchIds:automation.branchIds,capabilitySnapshot:automation.capabilitySnapshot,activationActorId:automation.updatedBy};
     let execution:any;try{execution=await AutomationExecutionModel.create({tenantId:event.tenantId,automationId:automation._id,automationVersion:automation.version,triggerEventId:event.eventId,triggerType:event.eventType,resourceType:event.resourceType,resourceId:event.resourceId,branchId:event.branchId,status:'PENDING',currentStep:0,snapshot,context,correlationId:event.correlationId,causationId:event.causationId,depth:event.depth});}catch(e:any){if(e.code===11000)return AutomationExecutionModel.findOne({tenantId:event.tenantId,triggerEventId:event.eventId,automationId:automation._id,automationVersion:automation.version});throw e;}
     if(!this.conditionsPass(automation.conditions,context)){execution.status='COMPLETED';execution.completedAt=new Date();execution.context={...context,conditionResult:false};await execution.save();return execution;}
-    return this.runExecution(execution._id.toString());
+    return this.runExecution(execution._id.toString(), undefined, authority, event.tenantId?.toString());
   }
-  static async runExecution(id:string, now=new Date()){
-    const execution:any=await AutomationExecutionModel.findById(id).setOptions({bypassTenantFilter:true});if(!execution||['COMPLETED','CANCELLED','DEAD_LETTER'].includes(execution.status))return execution;
-    const tenant=await TenantModel.findById(execution.tenantId).select('status').lean();if(!tenant||tenant.status!=='ACTIVE'){execution.status='WAITING';execution.nextRunAt=new Date(now.getTime()+60_000);execution.error={category:'AUTHORIZATION',message:'Tenant is suspended or inactive'};await execution.save();return execution;}
-    if(execution.depth>=MAX_DEPTH){execution.status='DEAD_LETTER';execution.error={category:'VALIDATION',message:'Maximum automation chain depth exceeded'};await execution.save();return execution;}
-    execution.status='RUNNING';execution.startedAt ||= now;await execution.save();
-    const steps:any[]=(execution.snapshot as any).steps;
-    while(execution.currentStep<steps.length){const step=steps[execution.currentStep],key=`${execution._id}:${step.stepId}`;let sx:any=await AutomationStepExecutionModel.findOneAndUpdate({executionId:execution._id,stepId:step.stepId},{$setOnInsert:{tenantId:execution.tenantId,stepIndex:execution.currentStep,actionType:step.actionType,status:'PENDING',attemptCount:0,idempotencyKey:key}},{upsert:true,new:true}).setOptions({bypassTenantFilter:true});
-      if(sx.status==='COMPLETED'){execution.currentStep++;await execution.save();continue;}
-      if(step.type==='DELAY'){const wake=sx.nextAttemptAt||new Date(now.getTime()+step.delaySeconds*1000);if(!sx.nextAttemptAt){sx.status='WAITING';sx.nextAttemptAt=wake;await sx.save();execution.status='WAITING';execution.nextRunAt=wake;await execution.save();return execution;}if(wake>now)return execution;sx.status='COMPLETED';sx.completedAt=now;await sx.save();execution.currentStep++;continue;}
-      const claimed:any=await AutomationStepExecutionModel.findOneAndUpdate({_id:sx._id,status:{$in:['PENDING','FAILED']},$or:[{nextAttemptAt:{$exists:false}},{nextAttemptAt:{$lte:now}}]},{$set:{status:'RUNNING',startedAt:now},$inc:{attemptCount:1}},{new:true}).setOptions({bypassTenantFilter:true});if(!claimed)return execution;sx=claimed;
-      try{const result=await this.executeAction(step,execution.context,key,execution);if(crashAfterAction===step.actionType){crashAfterAction=null;const crash:any=new Error('Injected worker crash after canonical action commit');crash.simulatedCrash=true;throw crash;}sx.status='COMPLETED';sx.completedAt=new Date();sx.result=result;await sx.save();execution.currentStep++;execution.nextRunAt=undefined;await execution.save();}
-      catch(e:any){if(e?.simulatedCrash)throw e;const category=e?.statusCode===400?'VALIDATION':e?.statusCode===403?'AUTHORIZATION':e?.statusCode===409?'DOMAIN_CONFLICT':'INTERNAL';sx.error={category,message:safeError(e)};if(category==='INTERNAL'&&sx.attemptCount<MAX_ATTEMPTS){sx.status='FAILED';sx.nextAttemptAt=new Date(Date.now()+Math.min(300_000,1000*2**sx.attemptCount));execution.status='WAITING';execution.nextRunAt=sx.nextAttemptAt;}else{sx.status='FAILED';execution.status=sx.attemptCount>=MAX_ATTEMPTS?'DEAD_LETTER':'FAILED';execution.failedAt=new Date();execution.error=sx.error;}await sx.save();await execution.save();return execution;}
+  static async runExecution(id:string, now=new Date(), authority?: SystemAuthority, expectedTenantId?: string){
+    let tenantId = tenantContextStorage.getStore()?.currentTenantId;
+    let auth = authority;
+    if (!tenantId) {
+      auth = resolveAutomationAuthority(authority);
+      const binding: any = await runAuthorizedSystemOperation(auth, {
+        kind: 'AUTOMATION_RECOVERY',
+        reason: 'Resolve automation execution tenant',
+        correlationId: id
+      }, () =>
+        AutomationExecutionModel.findById(id)
+          .setOptions({ authorizedSystemOperation: 'AUTOMATION_RECOVERY' })
+          .select('_id tenantId')
+          .lean()
+      );
+      if (!binding?.tenantId) return null;
+      tenantId = binding.tenantId.toString();
     }
-    execution.status='COMPLETED';execution.completedAt=new Date();execution.nextRunAt=undefined;await execution.save();return execution;
+    if (expectedTenantId && expectedTenantId !== tenantId) {
+      throw new Error('Automation execution tenant binding rejected');
+    }
+
+    return tenantContextStorage.run(
+      { currentTenantId: tenantId, currentUserId: auth?.principal || 'automation-worker', isPlatformContext: false, allowedTenantIds: [tenantId] },
+      async () => {
+        const execution: any = await AutomationExecutionModel.findOne({ _id: id, tenantId });
+        if (!execution || ['COMPLETED', 'CANCELLED', 'DEAD_LETTER'].includes(execution.status)) return execution;
+        const tenant = await TenantModel.findById(execution.tenantId).select('status').lean();
+        if (!tenant || tenant.status !== 'ACTIVE') {
+          execution.status = 'WAITING';
+          execution.nextRunAt = new Date(now.getTime() + 60_000);
+          execution.error = { category: 'AUTHORIZATION', message: 'Tenant is suspended or inactive' };
+          await execution.save();
+          return execution;
+        }
+        if (execution.depth >= MAX_DEPTH) {
+          execution.status = 'DEAD_LETTER';
+          execution.error = { category: 'VALIDATION', message: 'Maximum automation chain depth exceeded' };
+          await execution.save();
+          return execution;
+        }
+        execution.status = 'RUNNING';
+        execution.startedAt ||= now;
+        await execution.save();
+        const steps: any[] = (execution.snapshot as any).steps;
+        while (execution.currentStep < steps.length) {
+          const step = steps[execution.currentStep], key = `${execution._id}:${step.stepId}`;
+          let sx: any;
+          try {
+            sx = await AutomationStepExecutionModel.findOneAndUpdate(
+              { executionId: execution._id, stepId: step.stepId, tenantId: execution.tenantId },
+              {
+                $setOnInsert: {
+                  tenantId: execution.tenantId,
+                  stepIndex: execution.currentStep,
+                  actionType: step.actionType,
+                  status: 'PENDING',
+                  attemptCount: 0,
+                  idempotencyKey: key
+                }
+              },
+              { upsert: true, new: true }
+            );
+          } catch (err: any) {
+            if (err?.code === 11000) {
+              sx = await AutomationStepExecutionModel.findOne({
+                executionId: execution._id,
+                stepId: step.stepId,
+                tenantId: execution.tenantId
+              });
+            } else {
+              throw err;
+            }
+          }
+          if (sx.status === 'COMPLETED') {
+            execution.currentStep++;
+            await execution.save();
+            continue;
+          }
+          if (step.type === 'DELAY') {
+            const wake = sx.nextAttemptAt || new Date(now.getTime() + step.delaySeconds * 1000);
+            if (!sx.nextAttemptAt) {
+              sx.status = 'WAITING';
+              sx.nextAttemptAt = wake;
+              await sx.save();
+              execution.status = 'WAITING';
+              execution.nextRunAt = wake;
+              await execution.save();
+              return execution;
+            }
+            if (wake > now) return execution;
+            sx.status = 'COMPLETED';
+            sx.completedAt = now;
+            await sx.save();
+            execution.currentStep++;
+            continue;
+          }
+          const claimed: any = await AutomationStepExecutionModel.findOneAndUpdate(
+            {
+              _id: sx._id,
+              tenantId: execution.tenantId,
+              status: { $in: ['PENDING', 'FAILED'] },
+              $or: [{ nextAttemptAt: { $exists: false } }, { nextAttemptAt: { $lte: now } }]
+            },
+            { $set: { status: 'RUNNING', startedAt: now }, $inc: { attemptCount: 1 } },
+            { new: true }
+          );
+          if (!claimed) return execution;
+          sx = claimed;
+          try {
+            const result = await this.executeAction(step, execution.context, key, execution);
+            if (crashAfterAction === step.actionType) {
+              crashAfterAction = null;
+              const crash: any = new Error('Injected worker crash after canonical action commit');
+              crash.simulatedCrash = true;
+              throw crash;
+            }
+            sx.status = 'COMPLETED';
+            sx.completedAt = new Date();
+            sx.result = result;
+            await sx.save();
+            execution.currentStep++;
+            execution.nextRunAt = undefined;
+            await execution.save();
+          } catch (e: any) {
+            if (e?.simulatedCrash) throw e;
+            const category = e?.statusCode === 400 ? 'VALIDATION' : e?.statusCode === 403 ? 'AUTHORIZATION' : e?.statusCode === 409 ? 'DOMAIN_CONFLICT' : 'INTERNAL';
+            sx.error = { category, message: safeError(e) };
+            if (category === 'INTERNAL' && sx.attemptCount < MAX_ATTEMPTS) {
+              sx.status = 'FAILED';
+              sx.nextAttemptAt = new Date(Date.now() + Math.min(300_000, 1000 * 2 ** sx.attemptCount));
+              execution.status = 'WAITING';
+              execution.nextRunAt = sx.nextAttemptAt;
+            } else {
+              sx.status = 'FAILED';
+              execution.status = sx.attemptCount >= MAX_ATTEMPTS ? 'DEAD_LETTER' : 'FAILED';
+              execution.failedAt = new Date();
+              execution.error = sx.error;
+            }
+            await sx.save();
+            await execution.save();
+            return execution;
+          }
+        }
+        execution.status = 'COMPLETED';
+        execution.completedAt = new Date();
+        execution.nextRunAt = undefined;
+        await execution.save();
+        return execution;
+      }
+    );
   }
   static async executeAction(step:any,context:any,key:string,execution:any){
     const definition:any=(AUTOMATION_ACTIONS as any)[step.actionType];
@@ -115,7 +336,49 @@ export class AutomationService {
     if(step.actionType==='INTEGRATION_EMIT_EVENT'&&process.env.NODE_ENV==='test'){const event:any=await DomainEventService.publish({tenantId:String(execution.tenantId),eventId:`${key}:event`,eventType:step.inputs.eventType,occurredAt:new Date(),actorId:execution.context.actorId,resourceType:'Fixture',resourceId:execution.resourceId,correlationId:execution.correlationId,causationId:execution.triggerEventId,depth:execution.depth+1,payloadVersion:1,payload:{}});return{resourceType:'AutomationEvent',resourceId:event.eventId,status:event.status};}
     throw new BadRequestError('Unsupported action');
   }
-  static async recoverDue(now=new Date(),limit=50){const stale=new Date(now.getTime()-LEASE_MS);await AutomationStepExecutionModel.updateMany({status:'RUNNING',updatedAt:{$lt:stale}},{$set:{status:'FAILED',nextAttemptAt:now,error:{category:'INTERNAL',message:'Recovered abandoned worker lease'}}}).setOptions({bypassTenantFilter:true});const due:any[]=await AutomationExecutionModel.find({status:{$in:['WAITING','RUNNING']},$or:[{nextRunAt:{$lte:now}},{updatedAt:{$lt:stale}}]}).setOptions({bypassTenantFilter:true}).limit(limit).select('_id');for(const e of due)await this.runExecution(e._id.toString(),now);return due.length;}
+  static async recoverDue(now=new Date(),limit=50, authority?: SystemAuthority){
+    const auth = resolveAutomationAuthority(authority);
+    const stale = new Date(now.getTime() - LEASE_MS);
+    const staleSteps: any[] = await runAuthorizedSystemOperation(auth, {
+      kind: 'AUTOMATION_RECOVERY',
+      reason: 'Find abandoned automation step leases for recovery',
+      correlationId: `recover-steps-${now.getTime()}`
+    }, () =>
+      AutomationStepExecutionModel.find({ status: 'RUNNING', updatedAt: { $lt: stale } })
+        .setOptions({ authorizedSystemOperation: 'AUTOMATION_RECOVERY' })
+        .select('_id tenantId')
+        .lean()
+    );
+    for (const step of staleSteps) {
+      const stepTenant = step.tenantId?.toString();
+      if (!stepTenant) continue;
+      await tenantContextStorage.run(
+        { currentTenantId: stepTenant, currentUserId: auth.principal, isPlatformContext: false, allowedTenantIds: [stepTenant] },
+        () =>
+          AutomationStepExecutionModel.updateOne(
+            { _id: step._id, tenantId: stepTenant, status: 'RUNNING', updatedAt: { $lt: stale } },
+            { $set: { status: 'FAILED', nextAttemptAt: now, error: { category: 'INTERNAL', message: 'Recovered abandoned worker lease' } } }
+          )
+      );
+    }
+
+    const due: any[] = await runAuthorizedSystemOperation(auth, {
+      kind: 'AUTOMATION_RECOVERY',
+      reason: 'Find due automation executions for recovery',
+      correlationId: `recover-executions-${now.getTime()}`
+    }, () =>
+      AutomationExecutionModel.find({
+        status: { $in: ['WAITING', 'RUNNING'] },
+        $or: [{ nextRunAt: { $lte: now } }, { updatedAt: { $lt: stale } }]
+      })
+        .setOptions({ authorizedSystemOperation: 'AUTOMATION_RECOVERY' })
+        .limit(limit)
+        .select('_id tenantId')
+        .lean()
+    );
+    for (const e of due) await this.runExecution(e._id.toString(), now, auth, e.tenantId?.toString());
+    return due.length;
+  }
   static async assertExecutionScope(execution:any,actor:Actor){const tenantId=ctxTenant(),scope=await BranchAccessService.getScope(tenantId,actor);if(scope.mode==='SELECTED'&&(!execution.branchId||!scope.branchIds.includes(String(execution.branchId))))throw new NotFoundError('Execution not found');}
   static async listExecutions(automationId:string,q:any,actor:Actor){await this.get(automationId,actor);const tenantId=ctxTenant(),filter:any={tenantId,automationId};const scope=await BranchAccessService.getScope(tenantId,actor);if(scope.mode==='SELECTED')filter.branchId={$in:scope.branchIds.map(x=>new Types.ObjectId(x))};if(q.status)filter.status=q.status;const[data,total]=await Promise.all([AutomationExecutionModel.find(filter).sort({createdAt:-1}).skip((q.page-1)*q.limit).limit(q.limit).select('-context.payload -snapshot.capabilitySnapshot').lean(),AutomationExecutionModel.countDocuments(filter)]);return{data,pagination:{page:q.page,limit:q.limit,total,pages:Math.ceil(total/q.limit)}};}
   static async getExecution(id:string,actor:Actor):Promise<any>{const tenantId=ctxTenant(),execution:any=await AutomationExecutionModel.findOne({_id:id,tenantId}).lean();if(!execution)throw new NotFoundError('Execution not found');await this.assertExecutionScope(execution,actor);const steps:any[]=await AutomationStepExecutionModel.find({executionId:id,tenantId}).sort({stepIndex:1}).lean();const safeContext={eventId:execution.context?.eventId,eventType:execution.context?.eventType,resourceType:execution.context?.resourceType,resourceId:execution.context?.resourceId,branchId:execution.context?.branchId,conditionResult:execution.context?.conditionResult};delete execution.snapshot?.capabilitySnapshot;return{...execution,context:safeContext,steps};}

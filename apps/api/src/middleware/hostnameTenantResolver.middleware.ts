@@ -9,7 +9,7 @@ import { TenantModel } from '@edtech/database';
  */
 export async function hostnameTenantResolverMiddleware(req: Request, res: Response, next: NextFunction) {
   try {
-    const rawHost = (req.headers.host as string) || (req.headers['x-forwarded-host'] as string) || '';
+    const rawHost = (req.headers.host as string) || '';
     const resolvedTenantId = await OrganizationDomainService.resolveTenantByHostname(rawHost);
 
     let tenantId = resolvedTenantId;
@@ -26,14 +26,6 @@ export async function hostnameTenantResolverMiddleware(req: Request, res: Respon
         if (tenant) {
           tenantId = tenant._id.toString();
         }
-      }
-    }
-
-    // Default fallback to first active tenant for local development
-    if (!tenantId) {
-      const defaultTenant = await TenantModel.findOne({ status: 'ACTIVE' }).sort({ createdAt: 1 }).lean();
-      if (defaultTenant) {
-        tenantId = defaultTenant._id.toString();
       }
     }
 

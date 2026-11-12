@@ -17,8 +17,15 @@ export interface CreateMeetingInput {
   timezone: string;
   organizerUserId: string;
   organizerEmail?: string;
+  hostExternalUserId?: string;
+  hostEmail?: string;
   password?: string;
   autoRecord?: boolean;
+  muteParticipantsOnEntry?: boolean;
+  participantVideoOnEntry?: boolean;
+  waitingRoom?: boolean;
+  allowParticipantsToUnmute?: boolean;
+  allowParticipantsToStartVideo?: boolean;
   idempotencyKey?: string;
 }
 

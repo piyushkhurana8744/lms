@@ -11,6 +11,7 @@ import { IntegrationProvider } from '@edtech/types';
 import { BranchActor } from '../services/branchAccess.service';
 import { IntegrationOperationModel } from '@edtech/database';
 import { ZoomRecordingService } from '../services/integrations/orchestration/zoomRecording.service';
+import { TrainerZoomAccountService } from '../services/integrations/orchestration/trainerZoomAccount.service';
 
 const actor = (req: Request): BranchActor => {
   const user = (req as AuthenticatedRequest).user;
@@ -212,6 +213,49 @@ export class IntegrationsController {
 
   static getTranscripts(req: Request, res: Response, next: NextFunction) {
     LiveClassOrchestratorService.getTranscripts(tenant(), String(req.params.classId), actor(req))
+      .then((d) => ok(res, d))
+      .catch(next);
+  }
+
+  // Multi-Trainer Zoom Account Management
+  static listTrainerZoomAccounts(req: Request, res: Response, next: NextFunction) {
+    TrainerZoomAccountService.listTrainerZoomAccounts(tenant(), actor(req))
+      .then((d) => ok(res, d))
+      .catch(next);
+  }
+
+  static mapTrainerZoomAccount(req: Request, res: Response, next: NextFunction) {
+    const userId = String(req.params.userId);
+    const zoomIdentifier = String(req.body?.zoomIdentifier || req.body?.zoomUserId || req.body?.zoomEmail || '');
+    TrainerZoomAccountService.mapTrainerZoomAccount(tenant(), userId, zoomIdentifier, actor(req))
+      .then((d) => ok(res, d, 201))
+      .catch(next);
+  }
+
+  static syncTrainerZoomAccounts(req: Request, res: Response, next: NextFunction) {
+    TrainerZoomAccountService.syncAllTrainersZoomStatus(tenant(), actor(req))
+      .then((d) => ok(res, d))
+      .catch(next);
+  }
+
+  static deleteTrainerZoomAccount(req: Request, res: Response, next: NextFunction) {
+    const userId = String(req.params.userId);
+    TrainerZoomAccountService.deleteTrainerZoomAccount(tenant(), userId, actor(req))
+      .then((d) => ok(res, { deleted: d }))
+      .catch(next);
+  }
+
+  static reassignTrainerForClassMeeting(req: Request, res: Response, next: NextFunction) {
+    const classId = String(req.params.classId);
+    const newTrainerUserId = String(req.body?.instructorId || req.body?.newTrainerUserId || '');
+    TrainerZoomAccountService.reassignClassTrainerMeeting(tenant(), classId, newTrainerUserId, actor(req))
+      .then((d) => ok(res, d))
+      .catch(next);
+  }
+
+  static getMyTrainerZoomAccount(req: Request, res: Response, next: NextFunction) {
+    const currentActor = actor(req);
+    TrainerZoomAccountService.getTrainerZoomAccountForUser(tenant(), currentActor.userId)
       .then((d) => ok(res, d))
       .catch(next);
   }

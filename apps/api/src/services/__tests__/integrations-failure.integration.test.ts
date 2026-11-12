@@ -46,57 +46,77 @@ suite('Phase 22 External Integration Platform Failure & Concurrency Test Suite',
   beforeAll(async () => {
     const mongoUri = process.env.MONGO_INTEGRATION_URI || 'mongodb://127.0.0.1:27017/edtech_lms_test';
     await connectDatabase(mongoUri);
+    await Promise.all([
+      IntegrationWebhookEventModel.syncIndexes(),
+      IntegrationOperationModel.syncIndexes(),
+      ExternalMeetingModel.syncIndexes()
+    ]);
 
     await TenantModel.create({ _id: tenantId, name: 'Failure Test Tenant', slug: 'fail-tenant', status: 'ACTIVE' });
-    await BranchModel.create({ _id: branchId, tenantId, name: 'Branch 1', code: 'B1', slug: 'branch-1-fail', status: 'ACTIVE' });
-    await UserModel.create([
-      { _id: adminId, tenantId, allowedTenantIds: [tenantId], email: 'admin@fail.com', name: 'Admin', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: instructorId, tenantId, allowedTenantIds: [tenantId], email: 'inst@fail.com', name: 'Instructor', passwordHash: 'hash123', status: 'ACTIVE' }
-    ]);
-    await OrganizationMemberModel.create([
-      { tenantId, userId: adminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
-      { tenantId, userId: instructorId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' }
-    ]);
-    await CourseModel.create({
-      _id: courseId,
-      tenantId,
-      title: 'Fail Proof Course',
-      slug: 'fp-101',
-      status: 'PUBLISHED'
-    });
-    await BatchModel.create({
-      _id: batchId,
-      tenantId,
-      branchId,
-      courseId,
-      name: 'Fail Proof Batch',
-      batchCode: 'FPB-1',
-      startDate: new Date(),
-      status: 'ONGOING',
-      instructorId,
-      timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
-      mode: 'ONLINE',
-      maxSeats: 30,
-      enrolledCount: 0,
-      daysOfWeek: ['MON'],
-      showOnWebsite: true
-    });
+    await tenantContextStorage.run(
+      {
+        currentTenantId: tenantId.toString(),
+        currentUserId: adminId.toString(),
+        isPlatformContext: false,
+        allowedTenantIds: [tenantId.toString()]
+      },
+      async () => {
+        await BranchModel.create({ _id: branchId, tenantId, name: 'Branch 1', code: 'B1', slug: 'branch-1-fail', status: 'ACTIVE' });
+        await UserModel.create([
+          { _id: adminId, tenantId, allowedTenantIds: [tenantId], email: 'admin@fail.com', name: 'Admin', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: instructorId, tenantId, allowedTenantIds: [tenantId], email: 'inst@fail.com', name: 'Instructor', passwordHash: 'hash123', status: 'ACTIVE' }
+        ]);
+        await OrganizationMemberModel.create([
+          { tenantId, userId: adminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
+          { tenantId, userId: instructorId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' }
+        ]);
+        await CourseModel.create({
+          _id: courseId,
+          tenantId,
+          title: 'Fail Proof Course',
+          slug: 'fp-101',
+          status: 'PUBLISHED'
+        });
+        await BatchModel.create({
+          _id: batchId,
+          tenantId,
+          branchId,
+          courseId,
+          name: 'Fail Proof Batch',
+          batchCode: 'FPB-1',
+          startDate: new Date(),
+          status: 'ONGOING',
+          instructorId,
+          timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
+          mode: 'ONLINE',
+          maxSeats: 30,
+          enrolledCount: 0,
+          daysOfWeek: ['MON'],
+          showOnWebsite: true
+        });
+      }
+    );
 
     IntegrationProviderRegistry.setTestMode(true);
     testAdapter = IntegrationProviderRegistry.getDeterministicLiveAdapter('ZOOM');
   });
 
   afterAll(async () => {
-    await IntegrationOperationModel.deleteMany({});
-    await ExternalMeetingModel.deleteMany({});
-    await IntegrationConnectionModel.deleteMany({});
-    await ClassModel.deleteMany({});
-    await BatchModel.deleteMany({});
-    await CourseModel.deleteMany({});
-    await OrganizationMemberModel.deleteMany({});
-    await UserModel.deleteMany({});
-    await BranchModel.deleteMany({});
-    await TenantModel.deleteMany({});
+    for (const model of [
+      IntegrationWebhookEventModel,
+      IntegrationOperationModel,
+      ExternalMeetingModel,
+      IntegrationConnectionModel,
+      ClassModel,
+      BatchModel,
+      CourseModel,
+      OrganizationMemberModel,
+      UserModel,
+      BranchModel,
+      TenantModel
+    ]) {
+      await model.collection.deleteMany({});
+    }
     await disconnectDatabase();
   });
 
@@ -212,85 +232,95 @@ suite('Phase 22 External Integration Platform Failure & Concurrency Test Suite',
 
     providers.forEach((prov) => {
       it(`recovers from ambiguous crash for ${prov} without creating duplicates`, async () => {
-        const classId = new mongoose.Types.ObjectId();
-        await ClassModel.create({
-          _id: classId,
-          tenantId,
-          branchId,
-          batchId,
-          courseId,
-          instructorId,
-          name: `Ambiguous Commit ${prov} Class`,
-          classCode: `CLS-${prov.slice(0, 3)}-CRASH`,
-          scheduledStartAt: new Date(Date.now() + 3600000),
-          scheduledEndAt: new Date(Date.now() + 7200000),
-          startDate: new Date(Date.now() + 3600000),
-          endDate: new Date(Date.now() + 7200000),
-          status: 'SCHEDULED',
-          scheduleRevision: 0,
-          mode: 'ONLINE',
-          capacity: 30,
-          enrolledCount: 0,
-          enrolledStudents: [],
-          timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
-          daysOfWeek: [],
-          showOnWebsite: false
-        });
+        await tenantContextStorage.run(
+          {
+            currentTenantId: tenantId.toString(),
+            currentUserId: adminId.toString(),
+            isPlatformContext: false,
+            allowedTenantIds: [tenantId.toString()]
+          },
+          async () => {
+            const classId = new mongoose.Types.ObjectId();
+            await ClassModel.create({
+              _id: classId,
+              tenantId,
+              branchId,
+              batchId,
+              courseId,
+              instructorId,
+              name: `Ambiguous Commit ${prov} Class`,
+              classCode: `CLS-${prov.slice(0, 3)}-CRASH`,
+              scheduledStartAt: new Date(Date.now() + 3600000),
+              scheduledEndAt: new Date(Date.now() + 7200000),
+              startDate: new Date(Date.now() + 3600000),
+              endDate: new Date(Date.now() + 7200000),
+              status: 'SCHEDULED',
+              scheduleRevision: 0,
+              mode: 'ONLINE',
+              capacity: 30,
+              enrolledCount: 0,
+              enrolledStudents: [],
+              timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
+              daysOfWeek: [],
+              showOnWebsite: false
+            });
 
-        await IntegrationConnectionModel.create({
-          tenantId,
-          provider: prov,
-          scopeType: 'TENANT',
-          status: 'CONNECTED',
-          encryptedCredentials: SecretEncryptionService.encryptSecret(
-            JSON.stringify({
-              refreshToken: `ref_${prov}`,
-              accessToken: `acc_${prov}`
-            })
-          )
-        });
+            await IntegrationConnectionModel.create({
+              tenantId,
+              provider: prov,
+              scopeType: 'TENANT',
+              status: 'CONNECTED',
+              encryptedCredentials: SecretEncryptionService.encryptSecret(
+                JSON.stringify({
+                  refreshToken: `ref_${prov}`,
+                  accessToken: `acc_${prov}`
+                })
+              )
+            });
 
-        const provAdapter = IntegrationProviderRegistry.getDeterministicLiveAdapter(prov);
+            const provAdapter = IntegrationProviderRegistry.getDeterministicLiveAdapter(prov);
 
-        // Inject crash: adapter creates meeting externally but throws error before DIDM commits ExternalMeeting
-        provAdapter.setInjectedFailure({ errorType: 'AMBIGUOUS_CREATE_CRASH' });
+            // Inject crash: adapter creates meeting externally but throws error before DIDM commits ExternalMeeting
+            provAdapter.setInjectedFailure({ errorType: 'AMBIGUOUS_CREATE_CRASH' });
 
-        await expect(
-          LiveClassOrchestratorService.createMeetingForClass(
-            tenantId.toString(),
-            classId.toString(),
-            { provider: prov },
-            actor
-          )
-        ).rejects.toThrow();
+            await expect(
+              LiveClassOrchestratorService.createMeetingForClass(
+                tenantId.toString(),
+                classId.toString(),
+                { provider: prov },
+                actor
+              )
+            ).rejects.toThrow();
 
-        // Clear crash mode and retry
-        provAdapter.setInjectedFailure(null);
+            // Clear crash mode and retry
+            provAdapter.setInjectedFailure(null);
 
-        const recoveredMeeting = await LiveClassOrchestratorService.createMeetingForClass(
-          tenantId.toString(),
-          classId.toString(),
-          { provider: prov },
-          actor
+            const recoveredMeeting = await LiveClassOrchestratorService.createMeetingForClass(
+              tenantId.toString(),
+              classId.toString(),
+              { provider: prov },
+              actor
+            );
+
+            expect(recoveredMeeting.externalMeetingId).toBeDefined();
+            expect(recoveredMeeting.syncStatus).toBe('SYNCED');
+
+            // Verify exactly ONE ExternalMeeting document exists in MongoDB
+            const meetingCount = await ExternalMeetingModel.countDocuments({
+              tenantId,
+              classId: classId.toString()
+            });
+            expect(meetingCount).toBe(1);
+
+            // Verify logical operations completed = 1
+            const opCount = await IntegrationOperationModel.countDocuments({
+              tenantId,
+              canonicalResourceId: classId.toString(),
+              status: 'COMPLETED'
+            });
+            expect(opCount).toBe(1);
+          }
         );
-
-        expect(recoveredMeeting.externalMeetingId).toBeDefined();
-        expect(recoveredMeeting.syncStatus).toBe('SYNCED');
-
-        // Verify exactly ONE ExternalMeeting document exists in MongoDB
-        const meetingCount = await ExternalMeetingModel.countDocuments({
-          tenantId,
-          classId: classId.toString()
-        });
-        expect(meetingCount).toBe(1);
-
-        // Verify logical operations completed = 1
-        const opCount = await IntegrationOperationModel.countDocuments({
-          tenantId,
-          canonicalResourceId: classId.toString(),
-          status: 'COMPLETED'
-        });
-        expect(opCount).toBe(1);
       });
     });
   });

@@ -141,6 +141,10 @@ suite('Phase 20 Institutional Communication System Real MongoDB Integration Suit
       status: 'ACTIVE'
     });
 
+    // 2. Seed under tenant context
+    await tenantContextStorage.run(
+      { currentTenantId: tenantId.toString(), currentUserId: hqAdminId.toString(), isPlatformContext: false, allowedTenantIds: [tenantId.toString()] },
+      async () => {
     // 2. Seed Branches
     await BranchModel.create([
       {
@@ -361,6 +365,8 @@ suite('Phase 20 Institutional Communication System Real MongoDB Integration Suit
         revision: 0
       }
     ]);
+      }
+    );
   });
 
   afterAll(async () => {
@@ -644,14 +650,16 @@ suite('Phase 20 Institutional Communication System Real MongoDB Integration Suit
     });
 
     it('Transfer student1 from Branch A to Branch B', async () => {
-      await StudentLifecycleModel.updateOne(
-        { tenantId, studentUserId: student1Id },
-        { $set: { currentBranchId: branchBId } }
-      );
-      await OrganizationMemberModel.updateOne(
-        { tenantId, userId: student1Id },
-        { $set: { branchIds: [branchBId] } }
-      );
+      await runWithContext(async () => {
+        await StudentLifecycleModel.updateOne(
+          { tenantId, studentUserId: student1Id },
+          { $set: { currentBranchId: branchBId } }
+        );
+        await OrganizationMemberModel.updateOne(
+          { tenantId, userId: student1Id },
+          { $set: { branchIds: [branchBId] } }
+        );
+      });
     });
 
     it('Historical announcement A remains accessible in student1 inbox', async () => {
@@ -890,17 +898,27 @@ suite('Phase 20 Institutional Communication System Real MongoDB Integration Suit
 
   describe('8. Zero Cross-Domain Mutation Verification', () => {
     it('Asserts non-communication domains were completely untouched by communication operations', async () => {
-      const leadsCount = await LeadModel.countDocuments({ tenantId });
-      const admissionsCount = await AdmissionModel.countDocuments({ tenantId });
-      const paymentsCount = await PaymentModel.countDocuments({ tenantId });
-      const certificatesCount = await CertificateModel.countDocuments({ tenantId });
-      const attendanceCount = await AttendanceSessionModel.countDocuments({ tenantId });
+      await tenantContextStorage.run(
+        {
+          currentTenantId: tenantId.toString(),
+          currentUserId: hqAdminId.toString(),
+          isPlatformContext: false,
+          allowedTenantIds: [tenantId.toString()]
+        },
+        async () => {
+          const leadsCount = await LeadModel.countDocuments({ tenantId });
+          const admissionsCount = await AdmissionModel.countDocuments({ tenantId });
+          const paymentsCount = await PaymentModel.countDocuments({ tenantId });
+          const certificatesCount = await CertificateModel.countDocuments({ tenantId });
+          const attendanceCount = await AttendanceSessionModel.countDocuments({ tenantId });
 
-      expect(leadsCount).toBe(0);
-      expect(admissionsCount).toBe(0);
-      expect(paymentsCount).toBe(0);
-      expect(certificatesCount).toBe(0);
-      expect(attendanceCount).toBe(0);
+          expect(leadsCount).toBe(0);
+          expect(admissionsCount).toBe(0);
+          expect(paymentsCount).toBe(0);
+          expect(certificatesCount).toBe(0);
+          expect(attendanceCount).toBe(0);
+        }
+      );
     });
   });
 });

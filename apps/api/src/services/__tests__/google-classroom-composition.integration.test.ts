@@ -51,6 +51,17 @@ suite('Phase 22 Google Classroom Composition & Conflict Integration Suite', () =
     isSuperAdmin: false
   };
 
+  const runA = <T>(fn: () => Promise<T> | any): Promise<T> =>
+    tenantContextStorage.run(
+      {
+        currentTenantId: tenantAId.toString(),
+        currentUserId: adminId.toString(),
+        isPlatformContext: false,
+        allowedTenantIds: [tenantAId.toString()]
+      },
+      async () => await fn()
+    );
+
   beforeAll(async () => {
     const mongoUri = process.env.MONGO_INTEGRATION_URI || 'mongodb://127.0.0.1:27017/edtech_lms_test';
     await connectDatabase(mongoUri);
@@ -60,118 +71,132 @@ suite('Phase 22 Google Classroom Composition & Conflict Integration Suite', () =
       { _id: tenantBId, name: 'Tenant B Classroom', slug: 'tenant-b-cl', status: 'ACTIVE' }
     ]);
 
-    await BranchModel.create([
-      { _id: branchAId, tenantId: tenantAId, name: 'Branch A', code: 'BR-A', slug: 'branch-a-cl', status: 'ACTIVE' },
-      { _id: branchBId, tenantId: tenantAId, name: 'Branch B', code: 'BR-B', slug: 'branch-b-cl', status: 'ACTIVE' }
-    ]);
+    await tenantContextStorage.run(
+      {
+        currentTenantId: tenantAId.toString(),
+        currentUserId: adminId.toString(),
+        isPlatformContext: false,
+        allowedTenantIds: [tenantAId.toString()]
+      },
+      async () => {
+        await BranchModel.create([
+          { _id: branchAId, tenantId: tenantAId, name: 'Branch A', code: 'BR-A', slug: 'branch-a-cl', status: 'ACTIVE' },
+          { _id: branchBId, tenantId: tenantAId, name: 'Branch B', code: 'BR-B', slug: 'branch-b-cl', status: 'ACTIVE' }
+        ]);
 
-    await UserModel.create([
-      { _id: adminId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'admin@classroom.com', name: 'Admin', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: instructorId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'instructor@classroom.com', name: 'Instructor Lead', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: activeStudent1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'student1@classroom.com', name: 'Active Student 1', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: activeStudent2Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'student2@classroom.com', name: 'Active Student 2', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: withdrawnStudentId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'withdrawn@classroom.com', name: 'Withdrawn Student', passwordHash: 'hash123', status: 'ACTIVE' }
-    ]);
+        await UserModel.create([
+          { _id: adminId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'admin@classroom.com', name: 'Admin', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: instructorId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'instructor@classroom.com', name: 'Instructor Lead', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: activeStudent1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'student1@classroom.com', name: 'Active Student 1', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: activeStudent2Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'student2@classroom.com', name: 'Active Student 2', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: withdrawnStudentId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'withdrawn@classroom.com', name: 'Withdrawn Student', passwordHash: 'hash123', status: 'ACTIVE' }
+        ]);
 
-    await OrganizationMemberModel.create([
-      { tenantId: tenantAId, userId: adminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: instructorId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: activeStudent1Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: activeStudent2Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: withdrawnStudentId, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' }
-    ]);
+        await OrganizationMemberModel.create([
+          { tenantId: tenantAId, userId: adminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: instructorId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: activeStudent1Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: activeStudent2Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: withdrawnStudentId, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' }
+        ]);
 
-    await CourseModel.create({
-      _id: course1Id,
-      tenantId: tenantAId,
-      title: 'Python For AI',
-      slug: 'py-101',
-      status: 'PUBLISHED'
-    });
+        await CourseModel.create({
+          _id: course1Id,
+          tenantId: tenantAId,
+          title: 'Python For AI',
+          slug: 'py-101',
+          status: 'PUBLISHED'
+        });
 
-    await BatchModel.create({
-      _id: batchA1Id,
-      tenantId: tenantAId,
-      branchId: branchAId,
-      courseId: course1Id,
-      name: 'Python Morning Batch',
-      batchCode: 'PY-M1',
-      startDate: new Date(),
-      status: 'ONGOING',
-      instructorId: instructorId,
-      timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
-      mode: 'ONLINE',
-      maxSeats: 30,
-      enrolledCount: 2,
-      daysOfWeek: ['MON'],
-      showOnWebsite: true
-    });
+        await BatchModel.create({
+          _id: batchA1Id,
+          tenantId: tenantAId,
+          branchId: branchAId,
+          courseId: course1Id,
+          name: 'Python Morning Batch',
+          batchCode: 'PY-M1',
+          startDate: new Date(),
+          status: 'ONGOING',
+          instructorId: instructorId,
+          timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
+          mode: 'ONLINE',
+          maxSeats: 30,
+          enrolledCount: 2,
+          daysOfWeek: ['MON'],
+          showOnWebsite: true
+        });
 
-    await EnrollmentModel.create([
-      { tenantId: tenantAId, studentId: activeStudent1Id, courseId: course1Id, batchId: batchA1Id, status: 'ACTIVE' },
-      { tenantId: tenantAId, studentId: activeStudent2Id, courseId: course1Id, batchId: batchA1Id, status: 'ACTIVE' },
-      { tenantId: tenantAId, studentId: withdrawnStudentId, courseId: course1Id, batchId: batchA1Id, status: 'CANCELLED' }
-    ]);
+        await EnrollmentModel.create([
+          { tenantId: tenantAId, studentId: activeStudent1Id, courseId: course1Id, batchId: batchA1Id, status: 'ACTIVE' },
+          { tenantId: tenantAId, studentId: activeStudent2Id, courseId: course1Id, batchId: batchA1Id, status: 'ACTIVE' },
+          { tenantId: tenantAId, studentId: withdrawnStudentId, courseId: course1Id, batchId: batchA1Id, status: 'CANCELLED' }
+        ]);
 
-    await AssessmentModel.create({
-      _id: assessment1Id,
-      tenantId: tenantAId,
-      courseId: course1Id,
-      createdBy: instructorId,
-      title: 'Python Assignment 1 - Functions',
-      slug: 'py-assign-1',
-      description: 'Implement functions and recursion in Python',
-      status: 'PUBLISHED',
-      type: 'ASSIGNMENT'
-    });
+        await AssessmentModel.create({
+          _id: assessment1Id,
+          tenantId: tenantAId,
+          courseId: course1Id,
+          createdBy: instructorId,
+          title: 'Python Assignment 1 - Functions',
+          slug: 'py-assign-1',
+          description: 'Implement functions and recursion in Python',
+          status: 'PUBLISHED',
+          type: 'ASSIGNMENT'
+        });
 
-    await AssessmentSubmissionModel.create({
-      tenantId: tenantAId,
-      assessmentId: assessment1Id,
-      courseId: course1Id,
-      batchId: batchA1Id,
-      userId: activeStudent1Id,
-      type: 'ASSIGNMENT',
-      attemptNumber: 1,
-      score: 95,
-      maxScore: 100,
-      scorePercentage: 95,
-      status: 'GRADED',
-      submittedAt: new Date(),
-      revision: 0
-    });
+        await AssessmentSubmissionModel.create({
+          tenantId: tenantAId,
+          assessmentId: assessment1Id,
+          courseId: course1Id,
+          batchId: batchA1Id,
+          userId: activeStudent1Id,
+          type: 'ASSIGNMENT',
+          attemptNumber: 1,
+          score: 95,
+          maxScore: 100,
+          scorePercentage: 95,
+          status: 'GRADED',
+          submittedAt: new Date(),
+          revision: 0
+        });
 
-    connectionDoc = await IntegrationConnectionModel.create({
-      tenantId: tenantAId,
-      provider: 'GOOGLE_CLASSROOM',
-      status: 'CONNECTED',
-      encryptedCredentials: SecretEncryptionService.encryptSecret(
-        JSON.stringify({
-          refreshToken: 'dummy_refresh_token',
-          accessToken: 'dummy_access_token'
-        })
-      ),
-      externalAccountId: 'admin@school.edu',
-      scopes: ['https://www.googleapis.com/auth/classroom.courses']
-    });
+        connectionDoc = await IntegrationConnectionModel.create({
+          tenantId: tenantAId,
+          provider: 'GOOGLE_CLASSROOM',
+          status: 'CONNECTED',
+          encryptedCredentials: SecretEncryptionService.encryptSecret(
+            JSON.stringify({
+              refreshToken: 'dummy_refresh_token',
+              accessToken: 'dummy_access_token'
+            })
+          ),
+          externalAccountId: 'admin@school.edu',
+          scopes: ['https://www.googleapis.com/auth/classroom.courses']
+        });
+      }
+    );
 
     IntegrationProviderRegistry.setTestMode(true);
     testClassroomAdapter = IntegrationProviderRegistry.getDeterministicClassroomAdapter();
   });
 
   afterAll(async () => {
-    await IntegrationSyncRunModel.deleteMany({});
-    await ExternalAcademicResourceModel.deleteMany({});
-    await IntegrationConnectionModel.deleteMany({});
-    await AssessmentSubmissionModel.deleteMany({});
-    await AssessmentModel.deleteMany({});
-    await EnrollmentModel.deleteMany({});
-    await BatchModel.deleteMany({});
-    await CourseModel.deleteMany({});
-    await OrganizationMemberModel.deleteMany({});
-    await UserModel.deleteMany({});
-    await BranchModel.deleteMany({});
-    await TenantModel.deleteMany({});
+    for (const model of [
+      IntegrationSyncRunModel,
+      ExternalAcademicResourceModel,
+      IntegrationConnectionModel,
+      AssessmentSubmissionModel,
+      AssessmentModel,
+      EnrollmentModel,
+      BatchModel,
+      CourseModel,
+      OrganizationMemberModel,
+      UserModel,
+      BranchModel,
+      TenantModel
+    ]) {
+      await model.collection.deleteMany({});
+    }
     await disconnectDatabase();
   });
 
@@ -251,7 +276,15 @@ suite('Phase 22 Google Classroom Composition & Conflict Integration Suite', () =
       expect(syncRun.counts.courseworkSynced).toBe(1);
 
       // Verify withdrawn student is NOT deleted from canonical DIDM database
-      const withdrawnStudent = await UserModel.findById(withdrawnStudentId);
+      const withdrawnStudent = await tenantContextStorage.run(
+        {
+          currentTenantId: tenantAId.toString(),
+          currentUserId: adminId.toString(),
+          isPlatformContext: false,
+          allowedTenantIds: [tenantAId.toString()]
+        },
+        async () => await UserModel.findById(withdrawnStudentId)
+      );
       expect(withdrawnStudent).toBeDefined();
       expect(withdrawnStudent?.status).toBe('ACTIVE');
     });
@@ -259,10 +292,12 @@ suite('Phase 22 Google Classroom Composition & Conflict Integration Suite', () =
 
   describe('3. Grade Sync Policy & Conflict Detection', () => {
     it('detects grade conflict when policy is MANUAL_MERGE without silent overwriting', async () => {
-      const link = await ExternalAcademicResourceModel.findOne({
-        canonicalResourceId: batchA1Id.toString(),
-        tenantId: tenantAId
-      });
+      const link = await runA(() =>
+        ExternalAcademicResourceModel.findOne({
+          canonicalResourceId: batchA1Id.toString(),
+          tenantId: tenantAId
+        })
+      );
       expect(link).toBeDefined();
 
       const syncRun = await AcademicClassroomSyncService.syncClassroomResource(
@@ -280,7 +315,7 @@ suite('Phase 22 Google Classroom Composition & Conflict Integration Suite', () =
       expect(syncRun.status).toBe('PARTIAL');
       expect(syncRun.counts.conflictsDetected).toBeGreaterThanOrEqual(1);
 
-      const updatedLink = await ExternalAcademicResourceModel.findById(link!._id);
+      const updatedLink = await runA(() => ExternalAcademicResourceModel.findById(link!._id));
       expect(updatedLink?.status).toBe('CONFLICT');
       expect(updatedLink?.conflictData).toBeDefined();
       expect(updatedLink?.conflictData?.didmGrade).toBe(95);
@@ -288,10 +323,12 @@ suite('Phase 22 Google Classroom Composition & Conflict Integration Suite', () =
     });
 
     it('resolves grade conflict deterministically through audit-logged workflow', async () => {
-      const link = await ExternalAcademicResourceModel.findOne({
-        canonicalResourceId: batchA1Id.toString(),
-        tenantId: tenantAId
-      });
+      const link = await runA(() =>
+        ExternalAcademicResourceModel.findOne({
+          canonicalResourceId: batchA1Id.toString(),
+          tenantId: tenantAId
+        })
+      );
       expect(link).toBeDefined();
 
       const resolved = await AcademicClassroomSyncService.resolveConflict(

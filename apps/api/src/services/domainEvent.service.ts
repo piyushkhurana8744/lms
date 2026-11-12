@@ -14,12 +14,19 @@ export class DomainEventService {
   static async publish(raw: unknown, session?: ClientSession) {
     const event = AutomationEventEnvelopeSchema.parse(raw);
     if (failurePoint === 'BEFORE_INSERT') throw new Error('Injected failure before domain event insertion');
-    const doc = await AutomationEventModel.findOneAndUpdate(
-      { eventId: event.eventId },
-      { $setOnInsert: { ...event, status: 'PENDING', availableAt: new Date(), attemptCount: 0 } },
-      { upsert: true, new: true, session, setDefaultsOnInsert: true }
-    );
-    if (failurePoint === 'AFTER_INSERT') throw new Error('Injected failure after domain event insertion');
-    return doc;
+    try {
+      const doc = await AutomationEventModel.findOneAndUpdate(
+        { eventId: event.eventId },
+        { $setOnInsert: { ...event, status: 'PENDING', availableAt: new Date(), attemptCount: 0 } },
+        { upsert: true, new: true, session, setDefaultsOnInsert: true }
+      );
+      if (failurePoint === 'AFTER_INSERT') throw new Error('Injected failure after domain event insertion');
+      return doc;
+    } catch (err: any) {
+      if (err?.code === 11000 || err?.message?.includes('E11000')) {
+        return await AutomationEventModel.findOne({ eventId: event.eventId }).session(session || null);
+      }
+      throw err;
+    }
   }
 }

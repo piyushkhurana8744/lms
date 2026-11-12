@@ -18,11 +18,15 @@ import {
 } from '@edtech/database';
 import { hashPassword } from '@edtech/utils';
 import { SYSTEM_ROLE_PERMISSIONS } from '@edtech/permissions';
+import { assertMaintenanceSafety } from './maintenanceSafety';
 
 dotenv.config();
 
 async function seedDemoData() {
-  const mongoUri = process.env.MONGO_URI || 'mongodb://localhost:27017/edtech_lms';
+  const mongoUri = process.env.MONGO_URI;
+  if (!mongoUri) throw new Error('MONGO_URI is required');
+  const maintenance = assertMaintenanceSafety(mongoUri, 'seed-demo-data');
+  if (maintenance.dryRun) throw new Error('Demo seeding requires MAINTENANCE_DRY_RUN=0 after reviewing the target database');
   console.log('🚀 [Demo Seeder] Initializing DIDM LMS Demo Dataset...');
 
   await connectDatabase(mongoUri);

@@ -30,6 +30,7 @@ export class DeterministicLiveMeetingTestAdapter implements LiveMeetingProvider 
   public participantEvidenceFixture: ParticipantEvidenceItem[] = [];
   public recordingFixture: RecordingMetadataItem[] = [];
   public transcriptFixture: TranscriptMetadataItem[] = [];
+  public mockUsers = new Map<string, any>();
 
   constructor(
     provider: IntegrationProvider,
@@ -57,6 +58,7 @@ export class DeterministicLiveMeetingTestAdapter implements LiveMeetingProvider 
     this.injectedFailure = null;
     this.invocationCounts.clear();
     this.participantEvidenceFixture = [];
+    this.mockUsers.clear();
   }
 
   public getDiagnostics() {
@@ -164,13 +166,35 @@ export class DeterministicLiveMeetingTestAdapter implements LiveMeetingProvider 
       metadata: {
         topic: input.topic,
         agenda: input.agenda,
-        organizerUserId: input.organizerUserId
+        organizerUserId: input.organizerUserId,
+        hostExternalUserId: input.hostExternalUserId,
+        hostEmail: input.hostEmail
       }
     };
 
     this.createdMeetings.set(externalMeetingId, result);
     this.meetingsByClassId.set(input.classId, externalMeetingId);
     return result;
+  }
+
+  public async getZoomUser(_c: IIntegrationConnectionDocument, userIdOrEmail: string): Promise<any> {
+    const key = userIdOrEmail.toLowerCase();
+    for (const [id, user] of this.mockUsers.entries()) {
+      if (id.toLowerCase() === key || user.email?.toLowerCase() === key) {
+        return user;
+      }
+    }
+    return {
+      id: userIdOrEmail,
+      email: userIdOrEmail.includes('@') ? userIdOrEmail : `${userIdOrEmail}@zoom.test`,
+      type: 2,
+      status: 'active',
+      account_id: _c.externalTenantId || 'zoom_account_default'
+    };
+  }
+
+  public async listZoomUsers(_c: IIntegrationConnectionDocument): Promise<any[]> {
+    return Array.from(this.mockUsers.values());
   }
 
   public async getMeeting(

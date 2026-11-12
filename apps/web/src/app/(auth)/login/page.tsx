@@ -7,7 +7,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { sanitizeRedirectUrl, getDashboardRoute } from '@/utils/navigation';
 import Link from 'next/link';
 import { ThemeToggle } from '@/components/theme-toggle';
-import { Mail, Lock, ArrowRight, Sparkles, ShieldCheck } from 'lucide-react';
+import { Mail, Lock, ArrowRight, Sparkles, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 
 function LoginForm() {
   const { login, user } = useAuth();
@@ -18,6 +18,7 @@ function LoginForm() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -94,13 +95,22 @@ function LoginForm() {
           <div className="relative">
             <Lock className="w-4 h-4 text-[var(--text-muted)] absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
-              type="password"
+              type={showPassword ? 'text' : 'password'}
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="••••••••"
-              className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-[var(--brand-border)] bg-[var(--bg-surface-elevated)]/80 text-[var(--brand-text)] placeholder-[var(--text-muted)]/60 focus:outline-none focus:ring-2 focus:ring-[#BE1E2E] focus:border-transparent text-xs font-medium transition-all"
+              className="w-full pl-10 pr-11 py-2.5 rounded-xl border border-[var(--brand-border)] bg-[var(--bg-surface-elevated)]/80 text-[var(--brand-text)] placeholder-[var(--text-muted)]/60 focus:outline-none focus:ring-2 focus:ring-[#BE1E2E] focus:border-transparent text-xs font-medium transition-all"
             />
+            <button
+              type="button"
+              onClick={() => setShowPassword((visible) => !visible)}
+              className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--brand-text)] transition-colors"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              aria-pressed={showPassword}
+            >
+              {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+            </button>
           </div>
         </div>
 

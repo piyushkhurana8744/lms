@@ -77,23 +77,44 @@ export class OrganizationBrandingService {
       const tenant = await TenantModel.findById(tenantId);
       const orgName = settings?.profile?.organizationName || tenant?.name || 'DIDM LMS Organization';
 
-      doc = await OrganizationBrandingModel.create({
-        tenantId,
-        organizationName: orgName,
-        primaryColor: '#BE1E2E',
-        secondaryColor: '#1F2937',
-        accentColor: '#F59E0B',
-        fontFamily: 'Inter',
-        loginPage: {
-          showLogo: true,
-          headline: 'Welcome to your Learning Portal',
-          description: 'Start learning today'
-        },
-        browser: {
-          title: `${orgName} | Learning Management System`
-        },
-        social: {}
-      });
+      // Public pages can request site and branding data concurrently. Creating the
+      // default document with a separate read/create sequence caused one request to
+      // fail with E11000 on the unique tenantId index. Upsert makes initialization
+      // idempotent and safe when multiple requests arrive at the same time.
+      try {
+        doc = await OrganizationBrandingModel.findOneAndUpdate(
+          { tenantId },
+          {
+            $setOnInsert: {
+              tenantId,
+              organizationName: orgName,
+              primaryColor: '#BE1E2E',
+              secondaryColor: '#1F2937',
+              accentColor: '#F59E0B',
+              fontFamily: 'Inter',
+              loginPage: {
+                showLogo: true,
+                headline: 'Welcome to your Learning Portal',
+                description: 'Start learning today'
+              },
+              browser: {
+                title: `${orgName} | Learning Management System`
+              },
+              social: {}
+            }
+          },
+          { new: true, upsert: true, setDefaultsOnInsert: true }
+        );
+      } catch (error: any) {
+        // A unique-index race is still theoretically possible while an index is
+        // being built. The winning request has created the document, so read it.
+        if (error?.code !== 11000) throw error;
+        doc = await OrganizationBrandingModel.findOne({ tenantId });
+      }
+
+      if (!doc) {
+        throw new Error('Unable to initialize organization branding');
+      }
     }
 
     const [

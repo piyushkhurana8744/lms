@@ -3,6 +3,14 @@ import { AuthService } from '../services/auth.service';
 import { ApiResponse } from '../utils/apiResponse';
 import { AuthenticatedRequest } from '../middleware/auth.middleware';
 import { RegisterSchema, LoginSchema } from '@edtech/validation';
+import { verifyAccessToken } from '@edtech/utils';
+
+const cookieOptions = () => ({
+  httpOnly: true,
+  secure: process.env.NODE_ENV === 'production',
+  sameSite: 'lax' as const,
+  path: '/'
+});
 
 export class AuthController {
   public static async register(req: Request, res: Response): Promise<Response> {
@@ -23,21 +31,15 @@ export class AuthController {
       userAgent
     });
 
-    const isProd = process.env.NODE_ENV === 'production';
-
     // Set Refresh Token as Secure HttpOnly Cookie
     res.cookie('refreshToken', tokens.refreshToken, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: 'lax',
+      ...cookieOptions(),
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 Days
     });
 
     // Set Access Token in Cookie (as well as returning in payload for client flexibility)
     res.cookie('accessToken', tokens.accessToken, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: 'lax',
+      ...cookieOptions(),
       maxAge: 15 * 60 * 1000 // 15 Minutes
     });
 
@@ -52,19 +54,13 @@ export class AuthController {
 
     const tokens = await AuthService.refreshTokens(refreshToken);
 
-    const isProd = process.env.NODE_ENV === 'production';
-
     res.cookie('refreshToken', tokens.refreshToken, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: 'lax',
+      ...cookieOptions(),
       maxAge: 7 * 24 * 60 * 60 * 1000
     });
 
     res.cookie('accessToken', tokens.accessToken, {
-      httpOnly: true,
-      secure: isProd,
-      sameSite: 'lax',
+      ...cookieOptions(),
       maxAge: 15 * 60 * 1000
     });
 
@@ -72,12 +68,18 @@ export class AuthController {
   }
 
   public static async logout(req: AuthenticatedRequest, res: Response): Promise<Response> {
-    if (req.sessionId && req.user) {
-      await AuthService.logout(req.sessionId, req.user.userId);
+    const authorization = req.headers.authorization;
+    const token = req.cookies?.accessToken ||
+      (authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length) : undefined);
+    const decoded = token ? verifyAccessToken(token) : null;
+    if (decoded?.sessionId && decoded?.sub) {
+      // Cookie cleanup must still succeed if the backing session was already
+      // revoked or disappeared. Revocation is best-effort and idempotent here.
+      await AuthService.logout(decoded.sessionId, decoded.sub).catch(() => undefined);
     }
 
-    res.clearCookie('accessToken');
-    res.clearCookie('refreshToken');
+    res.clearCookie('accessToken', cookieOptions());
+    res.clearCookie('refreshToken', cookieOptions());
 
     return ApiResponse.success(res, { loggedOut: true }, 'Logged out successfully');
   }
@@ -87,8 +89,8 @@ export class AuthController {
       await AuthService.logoutAll(req.user.userId, req.user.userId);
     }
 
-    res.clearCookie('accessToken');
-    res.clearCookie('refreshToken');
+    res.clearCookie('accessToken', cookieOptions());
+    res.clearCookie('refreshToken', cookieOptions());
 
     return ApiResponse.success(res, { loggedOutAll: true }, 'Logged out of all active sessions');
   }

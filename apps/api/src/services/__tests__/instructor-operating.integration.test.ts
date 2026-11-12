@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { processNotificationDelivery } from './notification-system-test-helper';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AssessmentModel,
@@ -66,7 +67,7 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
         isPlatformContext: false,
         allowedTenantIds: [tenantId.toString()]
       },
-      fn
+      async () => await fn()
     );
 
   let submissionId: string;
@@ -225,21 +226,23 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
       createdBy: instructorId
     });
 
-    const submission = await AssessmentSubmissionModel.create({
-      tenantId,
-      assessmentId,
-      userId: studentId,
-      batchId,
-      courseId,
-      type: 'ASSIGNMENT',
-      attemptNumber: 1,
-      score: 0,
-      maxScore: 100,
-      scorePercentage: 0,
-      status: 'SUBMITTED',
-      revision: 0,
-      gradingHistory: []
-    });
+    const submission = await run(() =>
+      AssessmentSubmissionModel.create({
+        tenantId,
+        assessmentId,
+        userId: studentId,
+        batchId,
+        courseId,
+        type: 'ASSIGNMENT',
+        attemptNumber: 1,
+        score: 0,
+        maxScore: 100,
+        scorePercentage: 0,
+        status: 'SUBMITTED',
+        revision: 0,
+        gradingHistory: []
+      })
+    );
     submissionId = submission._id.toString();
   });
 
@@ -252,21 +255,23 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
 
   // HARD STOP 1: GRADING TRANSACTION ROLLBACK
   it('HARD STOP 1: rolls back entire transaction on injected failure and succeeds upon clean retry', async () => {
-    const freshSubmission = await AssessmentSubmissionModel.create({
-      tenantId,
-      assessmentId,
-      userId: studentId,
-      batchId,
-      courseId,
-      type: 'ASSIGNMENT',
-      attemptNumber: 2,
-      score: 0,
-      maxScore: 100,
-      scorePercentage: 0,
-      status: 'SUBMITTED',
-      revision: 0,
-      gradingHistory: []
-    });
+    const freshSubmission = await run(() =>
+      AssessmentSubmissionModel.create({
+        tenantId,
+        assessmentId,
+        userId: studentId,
+        batchId,
+        courseId,
+        type: 'ASSIGNMENT',
+        attemptNumber: 2,
+        score: 0,
+        maxScore: 100,
+        scorePercentage: 0,
+        status: 'SUBMITTED',
+        revision: 0,
+        gradingHistory: []
+      })
+    );
     const testSubId = freshSubmission._id.toString();
 
     const beforeState = {
@@ -276,7 +281,7 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
       revision: 0,
       historyCount: 0,
       auditCount: await AuditLogModel.countDocuments({ tenantId: tenantId.toString(), resourceId: testSubId }),
-      intentCount: await NotificationIntentModel.countDocuments({ tenantId, sourceId: testSubId }),
+      intentCount: await run(() => NotificationIntentModel.countDocuments({ tenantId, sourceId: testSubId })),
       notificationCount: await NotificationModel.countDocuments({ tenantId, sourceId: testSubId }),
       deliveryCount: await NotificationDeliveryModel.countDocuments({ tenantId })
     };
@@ -312,13 +317,13 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
     ).rejects.toThrow('Injected grading failure: GRADING_AFTER_INTENT');
 
     // Verify complete rollback after failed operations
-    const afterRollback = await AssessmentSubmissionModel.findById(testSubId).lean();
+    const afterRollback = await run(() => AssessmentSubmissionModel.findById(testSubId).lean());
     expect(afterRollback?.score).toBe(beforeState.score);
     expect(afterRollback?.status).toBe(beforeState.status);
     expect(afterRollback?.revision).toBe(beforeState.revision);
     expect(afterRollback?.gradingHistory).toHaveLength(beforeState.historyCount);
     expect(await AuditLogModel.countDocuments({ tenantId: tenantId.toString(), resourceId: testSubId })).toBe(beforeState.auditCount);
-    expect(await NotificationIntentModel.countDocuments({ tenantId, sourceId: testSubId })).toBe(beforeState.intentCount);
+    expect(await run(() => NotificationIntentModel.countDocuments({ tenantId, sourceId: testSubId }))).toBe(beforeState.intentCount);
     expect(await NotificationModel.countDocuments({ tenantId, sourceId: testSubId })).toBe(beforeState.notificationCount);
     expect(await NotificationDeliveryModel.countDocuments({ tenantId })).toBe(beforeState.deliveryCount);
 
@@ -340,26 +345,28 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
     expect(cleanResult.status).toBe('GRADED');
     expect(cleanResult.gradingHistory).toHaveLength(1);
     expect(await AuditLogModel.countDocuments({ tenantId: tenantId.toString(), resourceId: testSubId })).toBe(beforeState.auditCount + 1);
-    expect(await NotificationIntentModel.countDocuments({ tenantId, sourceId: testSubId, type: 'assessment.graded' })).toBe(1);
+    expect(await run(() => NotificationIntentModel.countDocuments({ tenantId, sourceId: testSubId, type: 'assessment.graded' }))).toBe(1);
   });
 
   // HARD STOP 2: GRADING PROVIDER FAILURE INDEPENDENCE
   it('HARD STOP 2: preserves committed grade upon email provider failure and recovers idempotently', async () => {
-    const provSub = await AssessmentSubmissionModel.create({
-      tenantId,
-      assessmentId,
-      userId: studentId,
-      batchId,
-      courseId,
-      type: 'ASSIGNMENT',
-      attemptNumber: 3,
-      score: 0,
-      maxScore: 100,
-      scorePercentage: 0,
-      status: 'SUBMITTED',
-      revision: 0,
-      gradingHistory: []
-    });
+    const provSub = await run(() =>
+      AssessmentSubmissionModel.create({
+        tenantId,
+        assessmentId,
+        userId: studentId,
+        batchId,
+        courseId,
+        type: 'ASSIGNMENT',
+        attemptNumber: 3,
+        score: 0,
+        maxScore: 100,
+        scorePercentage: 0,
+        status: 'SUBMITTED',
+        revision: 0,
+        gradingHistory: []
+      })
+    );
     const provSubId = provSub._id.toString();
 
     // Injected transient provider failure
@@ -399,15 +406,15 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
     expect(delivery).not.toBeNull();
 
     // Provider failure during delivery processing
-    await expect(NotificationService.processDelivery(delivery!._id.toString())).rejects.toThrow();
+    await expect(processNotificationDelivery(delivery!._id.toString())).rejects.toThrow();
 
     // Grade remains committed even though delivery processing failed
-    const storedSub = await AssessmentSubmissionModel.findById(provSubId).lean();
+    const storedSub = await run(() => AssessmentSubmissionModel.findById(provSubId).lean());
     expect(storedSub?.score).toBe(92);
     expect(storedSub?.revision).toBe(1);
     expect(storedSub?.status).toBe('GRADED');
 
-    const intent = await NotificationIntentModel.findOne({ tenantId, sourceId: provSubId, type: 'assessment.graded' });
+    const intent = await run(() => NotificationIntentModel.findOne({ tenantId, sourceId: provSubId, type: 'assessment.graded' }));
     expect(intent).not.toBeNull();
 
     const failedDelivery = await NotificationDeliveryModel.findById(delivery!._id);
@@ -421,19 +428,19 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
     await NotificationDeliveryModel.updateOne({ _id: delivery!._id }, { $set: { nextRetryAt: new Date(0) } });
 
     // Canonical retry / recovery
-    await NotificationService.processDelivery(delivery!._id.toString());
+    await processNotificationDelivery(delivery!._id.toString());
     const recoveredDelivery = await NotificationDeliveryModel.findById(delivery!._id);
     expect(recoveredDelivery?.status).toBe('DELIVERED');
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
 
     // Verify grade is completely unchanged during recovery
-    const subAfterRecovery = await AssessmentSubmissionModel.findById(provSubId).lean();
+    const subAfterRecovery = await run(() => AssessmentSubmissionModel.findById(provSubId).lean());
     expect(subAfterRecovery?.score).toBe(92);
     expect(subAfterRecovery?.revision).toBe(1);
     expect(subAfterRecovery?.gradingHistory).toHaveLength(1);
 
     // Replay recovery sweep - no duplicate deliveries or provider calls
-    await NotificationService.processDelivery(delivery!._id.toString());
+    await processNotificationDelivery(delivery!._id.toString());
     expect(sendEmailMock).toHaveBeenCalledTimes(1);
     expect(await NotificationModel.countDocuments({ tenantId, sourceId: provSubId })).toBe(1);
     expect(await NotificationDeliveryModel.countDocuments({ tenantId, notificationId: delivery!.notificationId })).toBe(1);
@@ -443,8 +450,8 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
   it('HARD STOP 8: preserves recurring availability wall-clock across Asia/Kolkata and America/New_York DST boundaries', async () => {
     // 1. Asia/Kolkata: Monday 09:00-17:00 local
     await OrganizationSettingsModel.updateOne({ tenantId }, { $set: { 'profile.timezone': 'Asia/Kolkata' } });
-    await ClassModel.deleteMany({ tenantId });
-    await InstructorAvailabilityModel.deleteMany({ tenantId });
+    await run(() => ClassModel.deleteMany({ tenantId }));
+    await run(() => InstructorAvailabilityModel.deleteMany({ tenantId }));
 
     await run(() =>
       InstructorOperatingService.updateAvailability(
@@ -499,8 +506,8 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
 
     // 2. America/New_York: Monday 09:00-17:00 crossing DST boundary
     await OrganizationSettingsModel.updateOne({ tenantId }, { $set: { 'profile.timezone': 'America/New_York' } });
-    await ClassModel.deleteMany({ tenantId });
-    await InstructorAvailabilityModel.deleteMany({ tenantId });
+    await run(() => ClassModel.deleteMany({ tenantId }));
+    await run(() => InstructorAvailabilityModel.deleteMany({ tenantId }));
 
     await run(() =>
       InstructorOperatingService.updateAvailability(
@@ -564,34 +571,36 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
   // HARD STOP 9: ASSIGNMENT CHANGE OWNERSHIP
   it('HARD STOP 9: transfers class ownership, updates access & attendance, and updates dashboard workload', async () => {
     await OrganizationSettingsModel.updateOne({ tenantId }, { $set: { 'profile.timezone': 'Asia/Kolkata' } });
-    await ClassModel.deleteMany({ tenantId });
+    await run(() => ClassModel.deleteMany({ tenantId }));
 
     const classStart = new Date(Date.now() + 3600000);
     const classEnd = new Date(Date.now() + 7200000);
-    const assignedClass = await ClassModel.create({
-      tenantId,
-      name: 'Transferred Class',
-      classCode: 'P17-REASSIGN-1',
-      batchId,
-      courseId,
-      instructorId,
-      mode: 'ONLINE',
-      capacity: 20,
-      enrolledCount: 1,
-      enrolledStudents: [{ studentId, studentName: 'Student A', studentEmail: 's17a@test.local', enrolledAt: new Date(Date.now() - 10 * 864e5), status: 'ENROLLED' }],
-      status: 'SCHEDULED',
-      startDate: classStart,
-      endDate: classEnd,
-      scheduledStartAt: classStart,
-      scheduledEndAt: classEnd,
-      timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
-      daysOfWeek: [],
-      showOnWebsite: false,
-      source: 'ONE_OFF',
-      occurrenceKey: 'p17:reassign:1',
-      scheduleRevision: 0,
-      isRescheduled: false
-    });
+    const assignedClass = await run(() =>
+      ClassModel.create({
+        tenantId,
+        name: 'Transferred Class',
+        classCode: 'P17-REASSIGN-1',
+        batchId,
+        courseId,
+        instructorId,
+        mode: 'ONLINE',
+        capacity: 20,
+        enrolledCount: 1,
+        enrolledStudents: [{ studentId, studentName: 'Student A', studentEmail: 's17a@test.local', enrolledAt: new Date(Date.now() - 10 * 864e5), status: 'ENROLLED' }],
+        status: 'SCHEDULED',
+        startDate: classStart,
+        endDate: classEnd,
+        scheduledStartAt: classStart,
+        scheduledEndAt: classEnd,
+        timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
+        daysOfWeek: [],
+        showOnWebsite: false,
+        source: 'ONE_OFF',
+        occurrenceKey: 'p17:reassign:1',
+        scheduleRevision: 0,
+        isRescheduled: false
+      })
+    );
     const concreteClassId = assignedClass._id.toString();
 
     // Instructor A has access initially
@@ -608,13 +617,15 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
     expect(initialWorkloadB.classesThisWeek).toBe(0);
 
     // Reassign class to Instructor B
-    await ClassModel.updateOne(
-      { _id: concreteClassId, tenantId },
-      { $set: { instructorId: instructorBId, scheduleRevision: 1, isRescheduled: true } }
+    await run(() =>
+      ClassModel.updateOne(
+        { _id: concreteClassId, tenantId },
+        { $set: { instructorId: instructorBId, scheduleRevision: 1, isRescheduled: true } }
+      )
     );
 
     // Class ID before = Class ID after
-    const afterClass = await ClassModel.findById(concreteClassId);
+    const afterClass = await run(() => ClassModel.findById(concreteClassId));
     expect(afterClass?._id.toString()).toBe(concreteClassId);
     expect(afterClass?.scheduleRevision).toBe(1);
 
@@ -702,76 +713,82 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
     });
 
     // Class 1: Before hold (20 days ago) -> Eligible
-    const c1 = await ClassModel.create({
-      tenantId,
-      name: 'Class Before Hold',
-      classCode: 'LC-C1',
-      batchId,
-      courseId,
-      instructorId,
-      mode: 'ONLINE',
-      capacity: 20,
-      enrolledCount: 1,
-      enrolledStudents: [{ studentId: testStudentId, studentName: 'LC Student', studentEmail: 'lc@test.local', enrolledAt: new Date(now - 30 * 864e5), status: 'ENROLLED' }],
-      status: 'ACTIVE',
-      startDate: new Date(now - 20 * 864e5),
-      endDate: new Date(now - 20 * 864e5 + 3600000),
-      timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
-      daysOfWeek: [],
-      showOnWebsite: false,
-      source: 'ONE_OFF',
-      occurrenceKey: 'lc:c1',
-      scheduleRevision: 0,
-      isRescheduled: false
-    });
+    const c1 = await run(() =>
+      ClassModel.create({
+        tenantId,
+        name: 'Class Before Hold',
+        classCode: 'LC-C1',
+        batchId,
+        courseId,
+        instructorId,
+        mode: 'ONLINE',
+        capacity: 20,
+        enrolledCount: 1,
+        enrolledStudents: [{ studentId: testStudentId, studentName: 'LC Student', studentEmail: 'lc@test.local', enrolledAt: new Date(now - 30 * 864e5), status: 'ENROLLED' }],
+        status: 'ACTIVE',
+        startDate: new Date(now - 20 * 864e5),
+        endDate: new Date(now - 20 * 864e5 + 3600000),
+        timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
+        daysOfWeek: [],
+        showOnWebsite: false,
+        source: 'ONE_OFF',
+        occurrenceKey: 'lc:c1',
+        scheduleRevision: 0,
+        isRescheduled: false
+      })
+    );
 
     // Class 2: During hold (5 days ago) -> Excluded
-    const c2 = await ClassModel.create({
-      tenantId,
-      name: 'Class During Hold',
-      classCode: 'LC-C2',
-      batchId,
-      courseId,
-      instructorId,
-      mode: 'ONLINE',
-      capacity: 20,
-      enrolledCount: 1,
-      enrolledStudents: [{ studentId: testStudentId, studentName: 'LC Student', studentEmail: 'lc@test.local', enrolledAt: new Date(now - 30 * 864e5), status: 'ENROLLED' }],
-      status: 'ACTIVE',
-      startDate: new Date(now - 5 * 864e5),
-      endDate: new Date(now - 5 * 864e5 + 3600000),
-      timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
-      daysOfWeek: [],
-      showOnWebsite: false,
-      source: 'ONE_OFF',
-      occurrenceKey: 'lc:c2',
-      scheduleRevision: 0,
-      isRescheduled: false
-    });
+    const c2 = await run(() =>
+      ClassModel.create({
+        tenantId,
+        name: 'Class During Hold',
+        classCode: 'LC-C2',
+        batchId,
+        courseId,
+        instructorId,
+        mode: 'ONLINE',
+        capacity: 20,
+        enrolledCount: 1,
+        enrolledStudents: [{ studentId: testStudentId, studentName: 'LC Student', studentEmail: 'lc@test.local', enrolledAt: new Date(now - 30 * 864e5), status: 'ENROLLED' }],
+        status: 'ACTIVE',
+        startDate: new Date(now - 5 * 864e5),
+        endDate: new Date(now - 5 * 864e5 + 3600000),
+        timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
+        daysOfWeek: [],
+        showOnWebsite: false,
+        source: 'ONE_OFF',
+        occurrenceKey: 'lc:c2',
+        scheduleRevision: 0,
+        isRescheduled: false
+      })
+    );
 
     // Class 3: After resume (yesterday) -> Eligible
-    const c3 = await ClassModel.create({
-      tenantId,
-      name: 'Class After Resume',
-      classCode: 'LC-C3',
-      batchId,
-      courseId,
-      instructorId,
-      mode: 'ONLINE',
-      capacity: 20,
-      enrolledCount: 1,
-      enrolledStudents: [{ studentId: testStudentId, studentName: 'LC Student', studentEmail: 'lc@test.local', enrolledAt: new Date(now - 30 * 864e5), status: 'ENROLLED' }],
-      status: 'ACTIVE',
-      startDate: new Date(now - 864e5),
-      endDate: new Date(now - 864e5 + 3600000),
-      timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
-      daysOfWeek: [],
-      showOnWebsite: false,
-      source: 'ONE_OFF',
-      occurrenceKey: 'lc:c3',
-      scheduleRevision: 0,
-      isRescheduled: false
-    });
+    const c3 = await run(() =>
+      ClassModel.create({
+        tenantId,
+        name: 'Class After Resume',
+        classCode: 'LC-C3',
+        batchId,
+        courseId,
+        instructorId,
+        mode: 'ONLINE',
+        capacity: 20,
+        enrolledCount: 1,
+        enrolledStudents: [{ studentId: testStudentId, studentName: 'LC Student', studentEmail: 'lc@test.local', enrolledAt: new Date(now - 30 * 864e5), status: 'ENROLLED' }],
+        status: 'ACTIVE',
+        startDate: new Date(now - 864e5),
+        endDate: new Date(now - 864e5 + 3600000),
+        timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
+        daysOfWeek: [],
+        showOnWebsite: false,
+        source: 'ONE_OFF',
+        occurrenceKey: 'lc:c3',
+        scheduleRevision: 0,
+        isRescheduled: false
+      })
+    );
 
     const s1 = await run(() => AttendanceService.open(c1._id.toString(), actor));
     const s2 = await run(() => AttendanceService.open(c2._id.toString(), actor));
@@ -870,7 +887,7 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
       plan: await StudentFeePlanModel.findById(planId).lean(),
       lifecycle: await StudentLifecycleModel.findOne({ tenantId, studentUserId: studentId }).lean(),
       certificate: await CertificateModel.findById(certId).lean(),
-      enrollment: await EnrollmentModel.findById(enrollmentId).lean()
+      enrollment: await run(() => EnrollmentModel.findById(enrollmentId).lean())
     };
 
     // Execute representative Instructor OS operations:
@@ -912,7 +929,7 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
       plan: await StudentFeePlanModel.findById(planId).lean(),
       lifecycle: await StudentLifecycleModel.findOne({ tenantId, studentUserId: studentId }).lean(),
       certificate: await CertificateModel.findById(certId).lean(),
-      enrollment: await EnrollmentModel.findById(enrollmentId).lean()
+      enrollment: await run(() => EnrollmentModel.findById(enrollmentId).lean())
     };
 
     expect(snapshotAfter).toEqual(snapshotBefore);
@@ -922,8 +939,8 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
   it('HARD STOP 14: asserts exact today count, pending attendance count, and weekly boundary across timezones', async () => {
     for (const timezone of ['Asia/Kolkata', 'America/New_York']) {
       await OrganizationSettingsModel.updateOne({ tenantId }, { $set: { 'profile.timezone': timezone } });
-      await ClassModel.deleteMany({ tenantId });
-      await AttendanceSessionModel.deleteMany({ tenantId });
+      await run(() => ClassModel.deleteMany({ tenantId }));
+      await run(() => AttendanceSessionModel.deleteMany({ tenantId }));
 
       const now = new Date();
       const day = AcademicTimezoneService.dayRange(now, timezone);
@@ -931,84 +948,90 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
 
       // Class 1: Today, past, unfinalized -> counts in today and pending attendance
       const pastToday = new Date(Math.max(day.start.getTime() + 60000, now.getTime() - 3600000));
-      const cPast = await ClassModel.create({
-        tenantId,
-        name: `${timezone}-past-unfinalized`,
-        classCode: `P-${timezone[0]}-1`,
-        batchId,
-        courseId,
-        instructorId,
-        mode: 'ONLINE',
-        capacity: 20,
-        enrolledCount: 1,
-        enrolledStudents: [{ studentId, studentName: 'S1', studentEmail: 's1@test.local', enrolledAt: new Date(Date.now() - 10 * 864e5), status: 'ENROLLED' }],
-        status: 'SCHEDULED',
-        startDate: pastToday,
-        endDate: new Date(pastToday.getTime() + 3600000),
-        scheduledStartAt: pastToday,
-        scheduledEndAt: new Date(pastToday.getTime() + 3600000),
-        timing: { startTime: '09:00', endTime: '10:00', timezone },
-        daysOfWeek: [],
-        showOnWebsite: false,
-        source: 'ONE_OFF',
-        occurrenceKey: `occ:past:${timezone}`,
-        scheduleRevision: 0,
-        isRescheduled: false
-      });
+      const cPast = await run(() =>
+        ClassModel.create({
+          tenantId,
+          name: `${timezone}-past-unfinalized`,
+          classCode: `P-${timezone[0]}-1`,
+          batchId,
+          courseId,
+          instructorId,
+          mode: 'ONLINE',
+          capacity: 20,
+          enrolledCount: 1,
+          enrolledStudents: [{ studentId, studentName: 'S1', studentEmail: 's1@test.local', enrolledAt: new Date(Date.now() - 10 * 864e5), status: 'ENROLLED' }],
+          status: 'SCHEDULED',
+          startDate: pastToday,
+          endDate: new Date(pastToday.getTime() + 3600000),
+          scheduledStartAt: pastToday,
+          scheduledEndAt: new Date(pastToday.getTime() + 3600000),
+          timing: { startTime: '09:00', endTime: '10:00', timezone },
+          daysOfWeek: [],
+          showOnWebsite: false,
+          source: 'ONE_OFF',
+          occurrenceKey: `occ:past:${timezone}`,
+          scheduleRevision: 0,
+          isRescheduled: false
+        })
+      );
 
       // Class 2: Today, future -> counts in today, not pending attendance, is nextClass
       const futureToday = new Date(Math.min(day.end.getTime() - 60000, now.getTime() + 3600000));
-      await ClassModel.create({
-        tenantId,
-        name: `${timezone}-future-today`,
-        classCode: `P-${timezone[0]}-2`,
-        batchId,
-        courseId,
-        instructorId,
-        mode: 'ONLINE',
-        capacity: 20,
-        enrolledCount: 0,
-        enrolledStudents: [],
-        status: 'SCHEDULED',
-        startDate: futureToday,
-        endDate: new Date(futureToday.getTime() + 3600000),
-        scheduledStartAt: futureToday,
-        scheduledEndAt: new Date(futureToday.getTime() + 3600000),
-        timing: { startTime: '15:00', endTime: '16:00', timezone },
-        daysOfWeek: [],
-        showOnWebsite: false,
-        source: 'ONE_OFF',
-        occurrenceKey: `occ:future:${timezone}`,
-        scheduleRevision: 0,
-        isRescheduled: false
-      });
+      await run(() =>
+        ClassModel.create({
+          tenantId,
+          name: `${timezone}-future-today`,
+          classCode: `P-${timezone[0]}-2`,
+          batchId,
+          courseId,
+          instructorId,
+          mode: 'ONLINE',
+          capacity: 20,
+          enrolledCount: 0,
+          enrolledStudents: [],
+          status: 'SCHEDULED',
+          startDate: futureToday,
+          endDate: new Date(futureToday.getTime() + 3600000),
+          scheduledStartAt: futureToday,
+          scheduledEndAt: new Date(futureToday.getTime() + 3600000),
+          timing: { startTime: '15:00', endTime: '16:00', timezone },
+          daysOfWeek: [],
+          showOnWebsite: false,
+          source: 'ONE_OFF',
+          occurrenceKey: `occ:future:${timezone}`,
+          scheduleRevision: 0,
+          isRescheduled: false
+        })
+      );
 
       // Class 3: Outside week -> excluded from this week
       const nextWeekDate = new Date(week.end.getTime() + 3600000);
-      await ClassModel.create({
-        tenantId,
-        name: `${timezone}-next-week`,
-        classCode: `P-${timezone[0]}-3`,
-        batchId,
-        courseId,
-        instructorId,
-        mode: 'ONLINE',
-        capacity: 20,
-        enrolledCount: 0,
-        enrolledStudents: [],
-        status: 'SCHEDULED',
-        startDate: nextWeekDate,
-        endDate: new Date(nextWeekDate.getTime() + 3600000),
-        scheduledStartAt: nextWeekDate,
-        scheduledEndAt: new Date(nextWeekDate.getTime() + 3600000),
-        timing: { startTime: '10:00', endTime: '11:00', timezone },
-        daysOfWeek: [],
-        showOnWebsite: false,
-        source: 'ONE_OFF',
-        occurrenceKey: `occ:outside:${timezone}`,
-        scheduleRevision: 0,
-        isRescheduled: false
-      });
+      await run(() =>
+        ClassModel.create({
+          tenantId,
+          name: `${timezone}-next-week`,
+          classCode: `P-${timezone[0]}-3`,
+          batchId,
+          courseId,
+          instructorId,
+          mode: 'ONLINE',
+          capacity: 20,
+          enrolledCount: 0,
+          enrolledStudents: [],
+          status: 'SCHEDULED',
+          startDate: nextWeekDate,
+          endDate: new Date(nextWeekDate.getTime() + 3600000),
+          scheduledStartAt: nextWeekDate,
+          scheduledEndAt: new Date(nextWeekDate.getTime() + 3600000),
+          timing: { startTime: '10:00', endTime: '11:00', timezone },
+          daysOfWeek: [],
+          showOnWebsite: false,
+          source: 'ONE_OFF',
+          occurrenceKey: `occ:outside:${timezone}`,
+          scheduleRevision: 0,
+          isRescheduled: false
+        })
+      );
 
       const dashboard = await run(() => InstructorOperatingService.dashboard(actor));
       expect(dashboard.classesToday).toBe(2);
@@ -1020,21 +1043,23 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
 
   // CONCURRENCY & REPLAY TESTS
   it('allows one winner in a ten-way grading race and preserves replay/re-grade semantics', async () => {
-    const sub = await AssessmentSubmissionModel.create({
-      tenantId,
-      assessmentId,
-      userId: studentId,
-      batchId,
-      courseId,
-      type: 'ASSIGNMENT',
-      attemptNumber: 10,
-      score: 0,
-      maxScore: 100,
-      scorePercentage: 0,
-      status: 'SUBMITTED',
-      revision: 0,
-      gradingHistory: []
-    });
+    const sub = await run(() =>
+      AssessmentSubmissionModel.create({
+        tenantId,
+        assessmentId,
+        userId: studentId,
+        batchId,
+        courseId,
+        type: 'ASSIGNMENT',
+        attemptNumber: 10,
+        score: 0,
+        maxScore: 100,
+        scorePercentage: 0,
+        status: 'SUBMITTED',
+        revision: 0,
+        gradingHistory: []
+      })
+    );
     const sId = sub._id.toString();
 
     const results = await Promise.allSettled(
@@ -1055,14 +1080,14 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(9);
 
-    let final: any = await AssessmentSubmissionModel.findById(sId).lean();
+    let final: any = await run(() => AssessmentSubmissionModel.findById(sId).lean());
     expect(final.revision).toBe(1);
     expect(final.gradingHistory).toHaveLength(1);
-    expect(await NotificationIntentModel.countDocuments({ sourceId: sId, type: 'assessment.graded' })).toBe(1);
+    expect(await run(() => NotificationIntentModel.countDocuments({ sourceId: sId, type: 'assessment.graded' }))).toBe(1);
 
     const winner = results.find((r) => r.status === 'fulfilled') as PromiseFulfilledResult<any>;
     const auditBefore = await AuditLogModel.countDocuments({ tenantId: tenantId.toString(), resourceId: sId });
-    const intentBefore = await NotificationIntentModel.countDocuments({ sourceId: sId });
+    const intentBefore = await run(() => NotificationIntentModel.countDocuments({ sourceId: sId }));
 
     // Idempotent replay
     await run(() =>
@@ -1075,11 +1100,11 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
         expectedRevision: 0
       })
     );
-    final = await AssessmentSubmissionModel.findById(sId).lean();
+    final = await run(() => AssessmentSubmissionModel.findById(sId).lean());
     expect(final.revision).toBe(1);
     expect(final.gradingHistory).toHaveLength(1);
     expect(await AuditLogModel.countDocuments({ tenantId: tenantId.toString(), resourceId: sId })).toBe(auditBefore);
-    expect(await NotificationIntentModel.countDocuments({ sourceId: sId })).toBe(intentBefore);
+    expect(await run(() => NotificationIntentModel.countDocuments({ sourceId: sId }))).toBe(intentBefore);
 
     // Legitimate regrade
     await run(() =>
@@ -1092,15 +1117,15 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
         expectedRevision: 1
       })
     );
-    final = await AssessmentSubmissionModel.findById(sId).lean();
+    final = await run(() => AssessmentSubmissionModel.findById(sId).lean());
     expect(final.revision).toBe(2);
     expect(final.gradingHistory).toHaveLength(2);
-    expect(await NotificationIntentModel.countDocuments({ sourceId: sId })).toBe(2);
+    expect(await run(() => NotificationIntentModel.countDocuments({ sourceId: sId }))).toBe(2);
   });
 
   it('allows one winner in a ten-way availability revision race', async () => {
-    await ClassModel.deleteMany({ tenantId });
-    await InstructorAvailabilityModel.deleteMany({ tenantId });
+    await run(() => ClassModel.deleteMany({ tenantId }));
+    await run(() => InstructorAvailabilityModel.deleteMany({ tenantId }));
 
     await run(() =>
       InstructorOperatingService.updateAvailability(
@@ -1127,22 +1152,22 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
 
     expect(outcomes.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     expect(outcomes.filter((r) => r.status === 'rejected')).toHaveLength(9);
-    expect((await InstructorAvailabilityModel.findOne({ tenantId, instructorId }))?.revision).toBe(2);
+    expect((await run(() => InstructorAvailabilityModel.findOne({ tenantId, instructorId })))?.revision).toBe(2);
   });
 
   it('serializes ten availability-versus-one-off races without an invalid final state', async () => {
-    await ClassModel.deleteMany({ tenantId });
-    await InstructorAvailabilityModel.deleteMany({ tenantId });
+    await run(() => ClassModel.deleteMany({ tenantId }));
+    await run(() => InstructorAvailabilityModel.deleteMany({ tenantId }));
 
     let invalid = 0;
     for (let i = 0; i < 10; i++) {
-      await ClassModel.deleteMany({ tenantId });
+      await run(() => ClassModel.deleteMany({ tenantId }));
       const date = new Date(Date.now() + (10 + i) * 864e5);
       const local = AcademicTimezoneService.localParts(date, 'Asia/Kolkata').localDate;
       const start = AcademicTimezoneService.localToInstant(local, '12:00', 'Asia/Kolkata');
       const end = AcademicTimezoneService.localToInstant(local, '13:00', 'Asia/Kolkata');
 
-      await InstructorAvailabilityModel.deleteMany({ tenantId });
+      await run(() => InstructorAvailabilityModel.deleteMany({ tenantId }));
       await run(() =>
         InstructorOperatingService.updateAvailability(
           {
@@ -1179,8 +1204,8 @@ suite('Phase 17 Instructor OS real MongoDB closure', () => {
         )
       ]);
 
-      const availability = await InstructorAvailabilityModel.findOne({ tenantId, instructorId }).lean();
-      const cls = await ClassModel.findOne({ tenantId, name: `Race ${i}` }).lean();
+      const availability = await run(() => InstructorAvailabilityModel.findOne({ tenantId, instructorId }).lean());
+      const cls = await run(() => ClassModel.findOne({ tenantId, name: `Race ${i}` }).lean());
       if (availability?.weeklyWindows.length === 0 && cls) invalid++;
     }
 

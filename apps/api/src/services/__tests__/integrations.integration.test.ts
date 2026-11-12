@@ -57,6 +57,7 @@ suite('Phase 22 External Integration Platform Real MongoDB Integration Suite', (
   beforeAll(async () => {
     const mongoUri = process.env.MONGO_INTEGRATION_URI || 'mongodb://127.0.0.1:27017/edtech_lms_test';
     await connectDatabase(mongoUri);
+    await IntegrationWebhookEventModel.syncIndexes();
 
     await TenantModel.create([
       { _id: tenantAId, name: 'Tenant A', slug: 'tenant-a', status: 'ACTIVE' },
@@ -68,107 +69,112 @@ suite('Phase 22 External Integration Platform Real MongoDB Integration Suite', (
       { _id: branchBId, tenantId: tenantAId, name: 'Branch B', code: 'BR-B', slug: 'branch-b', status: 'ACTIVE' }
     ]);
 
-    await UserModel.create([
-      { _id: hqAdminId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'admin@tenant-a.com', name: 'HQ Admin', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: instructor1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'inst1@tenant-a.com', name: 'Instructor 1', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: student1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'student1@tenant-a.com', name: 'Student 1', passwordHash: 'hash123', status: 'ACTIVE' }
-    ]);
+    await tenantContextStorage.run(
+      { currentTenantId: tenantAId.toString(), currentUser: { id: hqAdminId.toString(), tenantId: tenantAId.toString(), roles: ['TENANT_ADMIN'] } },
+      async () => {
+        await UserModel.create([
+          { _id: hqAdminId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'admin@tenant-a.com', name: 'HQ Admin', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: instructor1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'inst1@tenant-a.com', name: 'Instructor 1', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: student1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'student1@tenant-a.com', name: 'Student 1', passwordHash: 'hash123', status: 'ACTIVE' }
+        ]);
 
-    await OrganizationMemberModel.create([
-      { tenantId: tenantAId, userId: hqAdminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: instructor1Id, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: student1Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' }
-    ]);
+        await OrganizationMemberModel.create([
+          { tenantId: tenantAId, userId: hqAdminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: instructor1Id, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: student1Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' }
+        ]);
 
-    await CourseModel.create({
-      _id: course1Id,
-      tenantId: tenantAId,
-      title: 'Full Stack Web Dev',
-      slug: 'fswd-101',
-      status: 'PUBLISHED'
-    });
+        await CourseModel.create({
+          _id: course1Id,
+          tenantId: tenantAId,
+          title: 'Full Stack Web Dev',
+          slug: 'fswd-101',
+          status: 'PUBLISHED'
+        });
 
-    await BatchModel.create({
-      _id: batchA1Id,
-      tenantId: tenantAId,
-      branchId: branchAId,
-      courseId: course1Id,
-      name: 'Batch A1',
-      batchCode: 'BATCH-A1',
-      startDate: new Date(),
-      status: 'ONGOING',
-      instructorId: instructor1Id,
-      timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
-      mode: 'ONLINE',
-      maxSeats: 30,
-      enrolledCount: 1,
-      daysOfWeek: ['MON'],
-      showOnWebsite: true
-    });
+        await BatchModel.create({
+          _id: batchA1Id,
+          tenantId: tenantAId,
+          branchId: branchAId,
+          courseId: course1Id,
+          name: 'Batch A1',
+          batchCode: 'BATCH-A1',
+          startDate: new Date(),
+          status: 'ONGOING',
+          instructorId: instructor1Id,
+          timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
+          mode: 'ONLINE',
+          maxSeats: 30,
+          enrolledCount: 1,
+          daysOfWeek: ['MON'],
+          showOnWebsite: true
+        });
 
-    await EnrollmentModel.create({
-      tenantId: tenantAId,
-      studentId: student1Id,
-      courseId: course1Id,
-      batchId: batchA1Id,
-      status: 'ACTIVE'
-    });
+        await EnrollmentModel.create({
+          tenantId: tenantAId,
+          studentId: student1Id,
+          courseId: course1Id,
+          batchId: batchA1Id,
+          status: 'ACTIVE'
+        });
 
-    await ClassModel.create({
-      _id: class1Id,
-      tenantId: tenantAId,
-      branchId: branchAId,
-      batchId: batchA1Id,
-      courseId: course1Id,
-      instructorId: instructor1Id,
-      name: 'Live Class #1 - React Basics',
-      classCode: 'CLS-101',
-      scheduledStartAt: new Date(Date.now() + 3600000),
-      scheduledEndAt: new Date(Date.now() + 7200000),
-      startDate: new Date(Date.now() + 3600000),
-      endDate: new Date(Date.now() + 7200000),
-      status: 'SCHEDULED',
-      scheduleRevision: 0,
-      mode: 'ONLINE',
-      capacity: 30,
-      enrolledCount: 0,
-      enrolledStudents: [],
-      timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
-      daysOfWeek: [],
-      showOnWebsite: false
-    });
+        await ClassModel.create({
+          _id: class1Id,
+          tenantId: tenantAId,
+          branchId: branchAId,
+          batchId: batchA1Id,
+          courseId: course1Id,
+          instructorId: instructor1Id,
+          name: 'Live Class #1 - React Basics',
+          classCode: 'CLS-101',
+          scheduledStartAt: new Date(Date.now() + 3600000),
+          scheduledEndAt: new Date(Date.now() + 7200000),
+          startDate: new Date(Date.now() + 3600000),
+          endDate: new Date(Date.now() + 7200000),
+          status: 'SCHEDULED',
+          scheduleRevision: 0,
+          mode: 'ONLINE',
+          capacity: 30,
+          enrolledCount: 0,
+          enrolledStudents: [],
+          timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
+          daysOfWeek: [],
+          showOnWebsite: false
+        });
 
-    defaultConnectionAId = new mongoose.Types.ObjectId();
-    await IntegrationConnectionModel.create({
-      _id: defaultConnectionAId,
-      tenantId: tenantAId,
-      provider: 'GOOGLE_CLASSROOM',
-      status: 'CONNECTED',
-      encryptedCredentials: EmailCryptoService.encryptSecret({
-        refreshToken: 'super_secret_refresh_token_xyz_123',
-        accessToken: 'temp_access_token'
-      }),
-      externalAccountId: 'google-user-123@gmail.com',
-      scopes: ['https://www.googleapis.com/auth/classroom.courses.readonly']
-    });
+        defaultConnectionAId = new mongoose.Types.ObjectId();
+        await IntegrationConnectionModel.create({
+          _id: defaultConnectionAId,
+          tenantId: tenantAId,
+          provider: 'GOOGLE_CLASSROOM',
+          status: 'CONNECTED',
+          encryptedCredentials: EmailCryptoService.encryptSecret({
+            refreshToken: 'super_secret_refresh_token_xyz_123',
+            accessToken: 'temp_access_token'
+          }),
+          externalAccountId: 'google-user-123@gmail.com',
+          scopes: ['https://www.googleapis.com/auth/classroom.courses.readonly']
+        });
+      }
+    );
   });
 
   afterAll(async () => {
-    await IntegrationConnectionModel.deleteMany({});
-    await ExternalAcademicResourceModel.deleteMany({});
-    await ExternalMeetingModel.deleteMany({});
-    await IntegrationOperationModel.deleteMany({});
-    await IntegrationSyncRunModel.deleteMany({});
-    await IntegrationWebhookEventModel.deleteMany({});
-    await AttendanceEvidenceModel.deleteMany({});
-    await ClassModel.deleteMany({});
-    await EnrollmentModel.deleteMany({});
-    await BatchModel.deleteMany({});
-    await CourseModel.deleteMany({});
-    await OrganizationMemberModel.deleteMany({});
-    await UserModel.deleteMany({});
-    await BranchModel.deleteMany({});
-    await TenantModel.deleteMany({});
+    await IntegrationConnectionModel.collection.deleteMany({});
+    await ExternalAcademicResourceModel.collection.deleteMany({});
+    await ExternalMeetingModel.collection.deleteMany({});
+    await IntegrationOperationModel.collection.deleteMany({});
+    await IntegrationSyncRunModel.collection.deleteMany({});
+    await IntegrationWebhookEventModel.collection.deleteMany({});
+    await AttendanceEvidenceModel.collection.deleteMany({});
+    await ClassModel.collection.deleteMany({});
+    await EnrollmentModel.collection.deleteMany({});
+    await BatchModel.collection.deleteMany({});
+    await CourseModel.collection.deleteMany({});
+    await OrganizationMemberModel.collection.deleteMany({});
+    await UserModel.collection.deleteMany({});
+    await BranchModel.collection.deleteMany({});
+    await TenantModel.collection.deleteMany({});
     await disconnectDatabase();
   });
 
@@ -252,19 +258,27 @@ suite('Phase 22 External Integration Platform Real MongoDB Integration Suite', (
 
   describe('4. Durable Academic Platform (Google Classroom) Mapping & Sync Runs', () => {
     it('creates external academic resource link and sync run records', async () => {
-      const link = await ExternalAcademicResourceModel.create({
-        tenantId: tenantAId,
-        provider: 'GOOGLE_CLASSROOM',
-        resourceType: 'BATCH',
-        canonicalResourceId: batchA1Id.toString(),
-        externalResourceId: 'classroom-course-999',
-        connectionId: defaultConnectionAId,
-        branchId: branchAId,
-        syncDirection: 'BIDIRECTIONAL',
-        status: 'SYNCED'
-      });
+      await tenantContextStorage.run(
+        {
+          currentTenantId: tenantAId.toString(),
+          currentUserId: hqAdminId.toString(),
+          isPlatformContext: false,
+          allowedTenantIds: [tenantAId.toString()]
+        },
+        async () => {
+          const link = await ExternalAcademicResourceModel.create({
+            tenantId: tenantAId,
+            provider: 'GOOGLE_CLASSROOM',
+            resourceType: 'BATCH',
+            canonicalResourceId: batchA1Id.toString(),
+            externalResourceId: 'classroom-course-999',
+            connectionId: defaultConnectionAId,
+            branchId: branchAId,
+            syncDirection: 'BIDIRECTIONAL',
+            status: 'SYNCED'
+          });
 
-      expect(link._id).toBeDefined();
+          expect(link._id).toBeDefined();
 
       const syncRun = await IntegrationSyncRunModel.create({
         tenantId: tenantAId,
@@ -288,7 +302,9 @@ suite('Phase 22 External Integration Platform Real MongoDB Integration Suite', (
 
       expect(syncRun.status).toBe('COMPLETED');
       expect(syncRun.counts.teachersSynced).toBe(1);
-    });
+    }
+  );
+});
   });
 
   describe('5. Durable Live Meeting (Meet / Zoom / Teams) Mapping', () => {

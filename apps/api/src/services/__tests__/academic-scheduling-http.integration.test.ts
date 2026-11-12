@@ -121,8 +121,8 @@ suite('Phase 15 academic scheduling HTTP authorization and attack matrix', () =>
       { _id: ids.branchA, tenantId: ids.tenantA, code: 'A', slug: 'a', name: 'Branch A', status: 'ACTIVE', timezone: 'Asia/Kolkata', isPrimary: true, revision: 0 },
       { _id: ids.branchB, tenantId: ids.tenantB, code: 'B', slug: 'b', name: 'Branch B', status: 'ACTIVE', timezone: 'Asia/Kolkata', isPrimary: true, revision: 0 }
     ]);
-    await OrganizationMemberModel.updateMany({ tenantId: ids.tenantA, role: { $ne: 'TENANT_ADMIN' } }, { $set: { branchIds: [ids.branchA] } });
-    await OrganizationMemberModel.updateMany({ tenantId: ids.tenantB, role: { $ne: 'TENANT_ADMIN' } }, { $set: { branchIds: [ids.branchB] } });
+    await OrganizationMemberModel.collection.updateMany({ tenantId: ids.tenantA, role: { $ne: 'TENANT_ADMIN' } }, { $set: { branchIds: [ids.branchA] } });
+    await OrganizationMemberModel.collection.updateMany({ tenantId: ids.tenantB, role: { $ne: 'TENANT_ADMIN' } }, { $set: { branchIds: [ids.branchB] } });
 
     ids.courseA = new mongoose.Types.ObjectId();
     ids.courseB = new mongoose.Types.ObjectId();

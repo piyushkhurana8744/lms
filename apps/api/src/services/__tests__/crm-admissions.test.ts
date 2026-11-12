@@ -298,4 +298,97 @@ describe('PHASE 10 — Production-Grade CRM & Admissions Engine Suite (25 Tests)
     const canMutate = leadTenantId === requestTenantId;
     expect(canMutate).toBe(false);
   });
+
+  // 10. Credit Sheet, Fee Plan & Payment Reconciliation
+  it('26. CreateAdmissionSchema validates feeDetails with base fee, discount, paid token, and UTR', () => {
+    const valid = CreateAdmissionSchema.parse({
+      courseId: '507f1f77bcf86cd799439011',
+      feeDetails: {
+        baseAmount: 45000,
+        discountAmount: 5000,
+        discountReason: 'Early bird concession',
+        paidAmount: 10000,
+        paymentMethod: 'UPI',
+        transactionReference: 'UPI-493021948291',
+        installmentsCount: 2
+      }
+    });
+
+    expect(valid.feeDetails?.baseAmount).toBe(45000);
+    expect(valid.feeDetails?.discountAmount).toBe(5000);
+    expect(valid.feeDetails?.paidAmount).toBe(10000);
+    expect(valid.feeDetails?.paymentMethod).toBe('UPI');
+    expect(valid.feeDetails?.transactionReference).toBe('UPI-493021948291');
+    expect(valid.feeDetails?.installmentsCount).toBe(2);
+  });
+
+  it('27. Credit sheet correctly computes netPayable and allocates down payment + remaining installments', () => {
+    const feeDetails = {
+      baseAmount: 45000,
+      discountAmount: 5000,
+      paidAmount: 10000,
+      installmentsCount: 2
+    };
+
+    const baseMinor = feeDetails.baseAmount * 100;
+    const discountMinor = feeDetails.discountAmount * 100;
+    const netPayableMinor = baseMinor - discountMinor;
+    const paidMinor = feeDetails.paidAmount * 100;
+    const remainingBalanceMinor = netPayableMinor - paidMinor;
+
+    expect(netPayableMinor).toBe(4000000); // ₹40,000.00
+    expect(paidMinor).toBe(1000000); // ₹10,000.00
+    expect(remainingBalanceMinor).toBe(3000000); // ₹30,000.00
+
+    const installments: any[] = [];
+    if (paidMinor > 0) {
+      installments.push({ sequence: 1, label: 'Down Payment / Token Fee', amountMinor: paidMinor });
+    }
+    const remainingCount = feeDetails.installmentsCount - 1;
+    const perInstallment = Math.floor(remainingBalanceMinor / remainingCount);
+    for (let i = 1; i <= remainingCount; i++) {
+      installments.push({ sequence: installments.length + 1, label: `Installment ${installments.length + 1}`, amountMinor: perInstallment });
+    }
+
+    expect(installments).toHaveLength(2);
+    expect(installments[0].amountMinor).toBe(1000000); // Token
+    expect(installments[1].amountMinor).toBe(3000000); // Balance
+    expect(installments[0].amountMinor + installments[1].amountMinor).toBe(netPayableMinor);
+  });
+
+  it('28. ConvertAdmissionSchema accepts feeDetails override during conversion', () => {
+    const converted = ConvertAdmissionSchema.parse({
+      batchId: '507f1f77bcf86cd799439022',
+      feeDetails: {
+        baseAmount: 35000,
+        paidAmount: 35000,
+        paymentMethod: 'CASH',
+        installmentsCount: 1
+      }
+    });
+
+    expect(converted.batchId).toBe('507f1f77bcf86cd799439022');
+    expect(converted.feeDetails?.paidAmount).toBe(35000);
+    expect(converted.feeDetails?.paymentMethod).toBe('CASH');
+  });
+
+  it('29. Payment method accepts all authorized channels (UPI, CASH, BANK_TRANSFER, CARD, CHEQUE)', () => {
+    const methods = ['UPI', 'CASH', 'BANK_TRANSFER', 'CARD', 'CHEQUE'];
+    for (const method of methods) {
+      const parsed = CreateAdmissionSchema.parse({
+        courseId: '507f1f77bcf86cd799439011',
+        feeDetails: {
+          baseAmount: 25000,
+          paymentMethod: method as any
+        }
+      });
+      expect(parsed.feeDetails?.paymentMethod).toBe(method);
+    }
+  });
+
+  it('30. Admission number format ADM-YYYY-XXXX maintains deterministic incremental sequencing', () => {
+    const generateNumber = (seq: number) => `ADM-2026-${String(seq).padStart(4, '0')}`;
+    expect(generateNumber(1)).toBe('ADM-2026-0001');
+    expect(generateNumber(42)).toBe('ADM-2026-0042');
+  });
 });

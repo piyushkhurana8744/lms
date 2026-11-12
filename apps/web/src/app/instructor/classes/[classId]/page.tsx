@@ -15,15 +15,19 @@ import {
   UserX,
   Clock3,
   HelpCircle,
-  ExternalLink,
   Search,
   BookOpen,
   Sparkles,
   Lock,
   RefreshCw,
+  MicOff,
+  VideoOff,
+  ShieldCheck,
+  CircleDot,
 } from 'lucide-react';
 import { Button } from '@edtech/ui';
 import type { IIntegrationConnectionDTO, IProviderMetadataDTO } from '@edtech/types';
+import { LiveClassJoinButton } from '@/components/classes/LiveClassJoinButton';
 
 interface ClassDetails {
   id: string;
@@ -142,6 +146,12 @@ export default function InstructorClassPage({ params }: { params: { classId: str
   const [providerConnections, setProviderConnections] = useState<IIntegrationConnectionDTO[]>([]);
   const [recordings, setRecordings] = useState<any[]>([]);
   const [autoRecord, setAutoRecord] = useState(false);
+  const [showMeetingSettings, setShowMeetingSettings] = useState(false);
+  const [muteParticipantsOnEntry, setMuteParticipantsOnEntry] = useState(true);
+  const [participantVideoOnEntry, setParticipantVideoOnEntry] = useState(false);
+  const [waitingRoom, setWaitingRoom] = useState(true);
+  const [allowParticipantsToUnmute, setAllowParticipantsToUnmute] = useState(false);
+  const [allowParticipantsToStartVideo, setAllowParticipantsToStartVideo] = useState(false);
 
   // Filter & Search states
   const [searchQuery, setSearchQuery] = useState('');
@@ -211,7 +221,15 @@ export default function InstructorClassPage({ params }: { params: { classId: str
       const suffix = action === 'create' ? '' : `/${action}`;
       const res = await fetch(`/api/v1/integrations/classes/${params.classId}/meeting${suffix}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(action === 'create' ? { provider: meetingProvider, autoRecord: meetingProvider === 'ZOOM' && autoRecord } : action === 'cancel' ? { reason: 'Instructor cancelled meeting' } : {})
+        body: JSON.stringify(action === 'create' ? {
+          provider: meetingProvider,
+          autoRecord: meetingProvider === 'ZOOM' && autoRecord,
+          muteParticipantsOnEntry,
+          participantVideoOnEntry,
+          waitingRoom,
+          allowParticipantsToUnmute,
+          allowParticipantsToStartVideo
+        } : action === 'cancel' ? { reason: 'Instructor cancelled meeting' } : {})
       });
       const json = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(json.error?.message || json.message || `Meeting ${action} failed`);
@@ -472,16 +490,7 @@ export default function InstructorClassPage({ params }: { params: { classId: str
           {/* Quick Actions & Links */}
           <div className="flex flex-wrap items-center gap-3">
             {cls.meetingUrl && !isCancelled && (
-              <a
-                href={cls.meetingUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-semibold bg-primary text-primary-foreground hover:bg-primary/90 shadow-md transition-all active:scale-95"
-              >
-                <Video className="h-4 w-4" />
-                Join Class Meeting
-                <ExternalLink className="h-3.5 w-3.5 ml-1 opacity-80" />
-              </a>
+              <LiveClassJoinButton classId={cls.id} />
             )}
             <Button variant="outline" size="sm" onClick={fetchWorkspace} className="gap-2">
               <RefreshCw className="h-4 w-4" /> Refresh
@@ -557,10 +566,22 @@ export default function InstructorClassPage({ params }: { params: { classId: str
         {meeting ? <div data-testid="meeting-status" className="text-sm">{meeting.provider} · {meeting.status} · {meeting.syncStatus} · {new Date(meeting.scheduledStart).toLocaleString()}</div> : <div data-testid="meeting-status" className="text-sm text-muted-foreground">No active meeting</div>}
         <div className="flex flex-wrap gap-2">
           <Button disabled={meetingLoading || isCancelled || !providerAvailability(meetingProvider).usable} onClick={() => runMeetingAction('create')}>Create / Switch Meeting</Button>
+          <Button variant="outline" disabled={meetingLoading || isCancelled} onClick={() => setShowMeetingSettings((value) => !value)} className="gap-2"><ShieldCheck className="h-4 w-4" /> Meeting settings</Button>
           <Button variant="outline" disabled={meetingLoading || !meeting || isCancelled} onClick={() => runMeetingAction('reschedule')}>Reschedule Meeting</Button>
           <Button variant="outline" disabled={meetingLoading || !meeting} onClick={() => runMeetingAction('cancel')}>Cancel Meeting</Button>
         </div>
-        {meetingProvider === 'ZOOM' && <label className="flex items-start gap-2 text-sm rounded-xl border p-3"><input type="checkbox" checked={autoRecord} onChange={(event) => setAutoRecord(event.target.checked)} className="mt-1"/><span><strong>Automatic Zoom cloud recording</strong><span className="block text-xs text-muted-foreground">Requires a licensed host, recording scope, enabled Zoom policy, and participant notice. Availability begins only after Zoom finishes processing.</span></span></label>}
+        {showMeetingSettings && <div data-testid="meeting-host-settings" className="rounded-xl border bg-muted/20 p-4 space-y-4">
+          <div><h3 className="font-bold">Host controls</h3><p className="text-xs text-muted-foreground">These defaults are applied when the meeting is created. During the call, the host can grant or revoke individual permissions in the provider&apos;s Participants panel.</p></div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="flex items-start gap-3 rounded-xl border bg-background p-3 text-sm"><input type="checkbox" checked={muteParticipantsOnEntry} onChange={(event) => setMuteParticipantsOnEntry(event.target.checked)} className="mt-1"/><MicOff className="h-4 w-4 mt-0.5 text-rose-500"/><span><strong>Mute participants on entry</strong><span className="block text-xs text-muted-foreground">Everyone joins with their microphone off.</span></span></label>
+            <label className="flex items-start gap-3 rounded-xl border bg-background p-3 text-sm"><input type="checkbox" checked={!participantVideoOnEntry} onChange={(event) => setParticipantVideoOnEntry(!event.target.checked)} className="mt-1"/><VideoOff className="h-4 w-4 mt-0.5 text-rose-500"/><span><strong>Camera off on entry</strong><span className="block text-xs text-muted-foreground">Participants join without publishing video.</span></span></label>
+            <label className="flex items-start gap-3 rounded-xl border bg-background p-3 text-sm"><input type="checkbox" checked={waitingRoom} onChange={(event) => setWaitingRoom(event.target.checked)} className="mt-1"/><Lock className="h-4 w-4 mt-0.5 text-amber-500"/><span><strong>Waiting room</strong><span className="block text-xs text-muted-foreground">Host admits participants before they enter.</span></span></label>
+            <label className="flex items-start gap-3 rounded-xl border bg-background p-3 text-sm"><input type="checkbox" checked={allowParticipantsToUnmute} onChange={(event) => setAllowParticipantsToUnmute(event.target.checked)} className="mt-1"/><span><strong>Allow participants to unmute</strong><span className="block text-xs text-muted-foreground">Off by default; host can allow a person during the meeting.</span></span></label>
+            <label className="flex items-start gap-3 rounded-xl border bg-background p-3 text-sm"><input type="checkbox" checked={allowParticipantsToStartVideo} onChange={(event) => setAllowParticipantsToStartVideo(event.target.checked)} className="mt-1"/><span><strong>Allow participants to start video</strong><span className="block text-xs text-muted-foreground">Off by default; host can allow a person during the meeting.</span></span></label>
+          </div>
+          {meetingProvider !== 'ZOOM' && <p className="text-xs text-amber-700">Google Meet and Microsoft Teams enforce live participant permissions in their own host interface.</p>}
+        </div>}
+        {meetingProvider === 'ZOOM' && <label className={`flex items-start gap-3 text-sm rounded-xl border p-4 ${autoRecord ? 'border-red-500/40 bg-red-500/5' : ''}`}><input type="checkbox" checked={autoRecord} onChange={(event) => setAutoRecord(event.target.checked)} className="mt-1"/><CircleDot className={`h-5 w-5 mt-0.5 ${autoRecord ? 'text-red-600' : 'text-muted-foreground'}`}/><span><strong>{autoRecord ? 'Recording will start automatically' : 'Record this class'}</strong><span className="block text-xs text-muted-foreground">Zoom cloud recording requires a licensed host and participant notice. The recording appears below after Zoom finishes processing.</span></span></label>}
         <div data-testid="meeting-history" className="space-y-1 text-xs text-muted-foreground">
           <div className="font-semibold text-foreground">Meeting history</div>
           {meetingHistory.length ? meetingHistory.map((item) => <div key={item._id}>{item.provider} · {item.status} · {new Date(item.activatedAt).toLocaleString()}</div>) : <div>No provider history yet</div>}

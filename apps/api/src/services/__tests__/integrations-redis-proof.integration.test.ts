@@ -64,21 +64,21 @@ suite(`Phase 22 real Redis ${mode?.toLowerCase()} proof`, () => {
         connection.disconnect();
 
         // 2. Clear prior marker fixtures
-        const prior = await TenantModel.findOne({ slug: marker }).setOptions({ bypassTenantFilter: true });
+        const prior = await TenantModel.collection.findOne({ slug: marker });
         if (prior) {
           await Promise.all([
-            IntegrationOperationModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-            ExternalMeetingModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-            IntegrationConnectionModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-            ClassModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-            EnrollmentModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-            BatchModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-            CourseModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-            OrganizationMemberModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-            UserModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-            BranchModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true })
+            IntegrationOperationModel.collection.deleteMany({ tenantId: prior._id }),
+            ExternalMeetingModel.collection.deleteMany({ tenantId: prior._id }),
+            IntegrationConnectionModel.collection.deleteMany({ tenantId: prior._id }),
+            ClassModel.collection.deleteMany({ tenantId: prior._id }),
+            EnrollmentModel.collection.deleteMany({ tenantId: prior._id }),
+            BatchModel.collection.deleteMany({ tenantId: prior._id }),
+            CourseModel.collection.deleteMany({ tenantId: prior._id }),
+            OrganizationMemberModel.collection.deleteMany({ tenantId: prior._id }),
+            UserModel.collection.deleteMany({ tenantId: prior._id }),
+            BranchModel.collection.deleteMany({ tenantId: prior._id })
           ]);
-          await TenantModel.deleteOne({ _id: prior._id }).setOptions({ bypassTenantFilter: true });
+          await TenantModel.collection.deleteOne({ _id: prior._id });
         }
 
         // 3. Create Tenant, Branch, Users, Course, Batch
@@ -91,223 +91,232 @@ suite(`Phase 22 real Redis ${mode?.toLowerCase()} proof`, () => {
         const courseId = new mongoose.Types.ObjectId();
         const batchId = new mongoose.Types.ObjectId();
 
-        await BranchModel.create({
-          _id: branchId,
-          tenantId,
-          name: 'Redis Proof Branch',
-          code: 'RPB-1',
-          slug: `${marker}-branch`,
-          status: 'ACTIVE'
-        });
-
-        await UserModel.collection.insertMany([
-          { _id: adminId, tenantId, allowedTenantIds: [tenantId], name: 'Proof Admin', email: 'admin@p22-proof.test', passwordHash: 'x', status: 'ACTIVE' },
-          { _id: instructorId, tenantId, allowedTenantIds: [tenantId], name: 'Proof Instructor', email: 'inst@p22-proof.test', passwordHash: 'x', status: 'ACTIVE' },
-          { _id: studentId, tenantId, allowedTenantIds: [tenantId], name: 'Proof Student', email: 'student@p22-proof.test', passwordHash: 'x', status: 'ACTIVE' }
-        ]);
-
-        await OrganizationMemberModel.collection.insertMany([
-          { tenantId, userId: adminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
-          { tenantId, userId: instructorId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' },
-          { tenantId, userId: studentId, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' }
-        ]);
-
-        await CourseModel.create({ _id: courseId, tenantId, title: 'Proof Course', slug: `${marker}-course`, status: 'PUBLISHED' });
-
-        await BatchModel.create({
-          _id: batchId,
-          tenantId,
-          branchId,
-          courseId,
-          name: 'Proof Batch',
-          batchCode: 'P22-BATCH',
-          mode: 'ONLINE',
-          status: 'ONGOING',
-          startDate: new Date(),
-          maxSeats: 30,
-          enrolledCount: 1,
-          timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
-          daysOfWeek: ['MON'],
-          showOnWebsite: false
-        });
-
-        await EnrollmentModel.create({
-          tenantId,
-          studentId,
-          courseId,
-          status: 'ACTIVE',
-          enrolledAt: new Date(),
-          progressPercent: 0
-        });
-
-        const conn = await IntegrationConnectionModel.create({
-          tenantId,
-          provider: 'GOOGLE_MEET',
-          status: 'CONNECTED',
-          encryptedCredentials: SecretEncryptionService.encryptSecret(
-            JSON.stringify({ refreshToken: 'ref_p22', accessToken: 'acc_p22' })
-          ),
-          externalAccountId: 'proof-host@google.test'
-        });
-
-        // 4. 1A: Reschedule Test Fixture
-        const rescheduleClassId = new mongoose.Types.ObjectId();
-        const initialStart = new Date(Date.now() + 3600000);
-        const initialEnd = new Date(Date.now() + 7200000);
-        const rescheduledStart = new Date(Date.now() + 14400000);
-        const rescheduledEnd = new Date(Date.now() + 18000000);
-
-        await ClassModel.create({
-          _id: rescheduleClassId,
-          tenantId,
-          branchId,
-          batchId,
-          courseId,
-          instructorId,
-          name: 'Redis Reschedule Class',
-          classCode: 'CLS-RESCHED-P22',
-          scheduledStartAt: initialStart,
-          scheduledEndAt: initialEnd,
-          startDate: initialStart,
-          endDate: initialEnd,
-          status: 'SCHEDULED',
-          scheduleRevision: 0,
-          mode: 'ONLINE',
-          capacity: 30,
-          enrolledCount: 1,
-          enrolledStudents: [],
-          timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
-          daysOfWeek: [],
-          showOnWebsite: false
-        });
-
-        await ExternalMeetingModel.create({
-          tenantId,
-          branchId,
-          classId: rescheduleClassId.toString(),
-          provider: 'GOOGLE_MEET',
-          connectionId: conn._id,
-          organizerUserId: instructorId.toString(),
-          externalMeetingId: `meet_resched_${rescheduleClassId}`,
-          joinUrl: `https://meet.google.com/test-resched-${rescheduleClassId}`,
-          providerStatus: 'SCHEDULED',
-          scheduledStart: initialStart,
-          scheduledEnd: initialEnd,
-          timezone: 'UTC',
-          syncStatus: 'SYNCED'
-        });
-
-        // 5. 1B: Cancel Test Fixture
-        const cancelClassId = new mongoose.Types.ObjectId();
-        await ClassModel.create({
-          _id: cancelClassId,
-          tenantId,
-          branchId,
-          batchId,
-          courseId,
-          instructorId,
-          name: 'Redis Cancel Class',
-          classCode: 'CLS-CANCEL-P22',
-          scheduledStartAt: initialStart,
-          scheduledEndAt: initialEnd,
-          startDate: initialStart,
-          endDate: initialEnd,
-          status: 'SCHEDULED',
-          scheduleRevision: 0,
-          mode: 'ONLINE',
-          capacity: 30,
-          enrolledCount: 1,
-          enrolledStudents: [],
-          timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
-          daysOfWeek: [],
-          showOnWebsite: false
-        });
-
-        await ExternalMeetingModel.create({
-          tenantId,
-          branchId,
-          classId: cancelClassId.toString(),
-          provider: 'GOOGLE_MEET',
-          connectionId: conn._id,
-          organizerUserId: instructorId.toString(),
-          externalMeetingId: `meet_cancel_${cancelClassId}`,
-          joinUrl: `https://meet.google.com/test-cancel-${cancelClassId}`,
-          providerStatus: 'SCHEDULED',
-          scheduledStart: initialStart,
-          scheduledEnd: initialEnd,
-          timezone: 'UTC',
-          syncStatus: 'SYNCED'
-        });
-
-        const studentActor = {
-          userId: studentId.toString(),
-          roles: ['STUDENT'],
-          isHqActor: false,
-          isSuperAdmin: false
-        };
-
-        // --- EXECUTE 1A: Reschedule canonical Class during Redis outage ---
-        const clsToReschedule = await ClassModel.findById(rescheduleClassId);
-        clsToReschedule!.scheduledStartAt = rescheduledStart;
-        clsToReschedule!.scheduledEndAt = rescheduledEnd;
-        clsToReschedule!.scheduleRevision = 1;
-        await clsToReschedule!.save();
-
-        // Create durable IntegrationOperation for reschedule during outage
-        await IntegrationOperationModel.create({
-          tenantId,
-          provider: 'GOOGLE_MEET',
-          connectionId: conn._id,
-          operationType: 'RESCHEDULE_MEETING',
-          canonicalResourceType: 'Class',
-          canonicalResourceId: rescheduleClassId.toString(),
-          idempotencyKey: `RESCHEDULE_MEETING:${rescheduleClassId}:1`,
-          status: 'RETRYABLE',
-          attempts: 1,
-          payload: {
-            startAt: rescheduledStart,
-            endAt: rescheduledEnd,
-            timezone: 'UTC'
+        await tenantContextStorage.run(
+          {
+            currentTenantId: tenantId.toString(),
+            currentUserId: adminId.toString(),
+            isPlatformContext: false,
+            allowedTenantIds: [tenantId.toString()]
           },
-          nextRetryAt: new Date(Date.now() - 1000)
+          async () => {
+          await BranchModel.create({
+            _id: branchId,
+            tenantId,
+            name: 'Redis Proof Branch',
+            code: 'RPB-1',
+            slug: `${marker}-branch`,
+            status: 'ACTIVE'
+          });
+
+          await UserModel.collection.insertMany([
+            { _id: adminId, tenantId, allowedTenantIds: [tenantId], name: 'Proof Admin', email: 'admin@p22-proof.test', passwordHash: 'x', status: 'ACTIVE' },
+            { _id: instructorId, tenantId, allowedTenantIds: [tenantId], name: 'Proof Instructor', email: 'inst@p22-proof.test', passwordHash: 'x', status: 'ACTIVE' },
+            { _id: studentId, tenantId, allowedTenantIds: [tenantId], name: 'Proof Student', email: 'student@p22-proof.test', passwordHash: 'x', status: 'ACTIVE' }
+          ]);
+
+          await OrganizationMemberModel.collection.insertMany([
+            { tenantId, userId: adminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
+            { tenantId, userId: instructorId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' },
+            { tenantId, userId: studentId, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' }
+          ]);
+
+          await CourseModel.collection.insertOne({ _id: courseId, tenantId, title: 'Proof Course', slug: `${marker}-course`, status: 'PUBLISHED' });
+
+          await BatchModel.create({
+            _id: batchId,
+            tenantId,
+            branchId,
+            courseId,
+            name: 'Proof Batch',
+            batchCode: 'P22-BATCH',
+            mode: 'ONLINE',
+            status: 'ONGOING',
+            startDate: new Date(),
+            maxSeats: 30,
+            enrolledCount: 1,
+            timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
+            daysOfWeek: ['MON'],
+            showOnWebsite: false
+          });
+
+          await EnrollmentModel.create({
+            tenantId,
+            studentId,
+            courseId,
+            status: 'ACTIVE',
+            enrolledAt: new Date(),
+            progressPercent: 0
+          });
+
+          const conn = await IntegrationConnectionModel.create({
+            tenantId,
+            provider: 'GOOGLE_MEET',
+            status: 'CONNECTED',
+            encryptedCredentials: SecretEncryptionService.encryptSecret(
+              JSON.stringify({ refreshToken: 'ref_p22', accessToken: 'acc_p22' })
+            ),
+            externalAccountId: 'proof-host@google.test'
+          });
+
+          // 4. 1A: Reschedule Test Fixture
+          const rescheduleClassId = new mongoose.Types.ObjectId();
+          const initialStart = new Date(Date.now() + 3600000);
+          const initialEnd = new Date(Date.now() + 7200000);
+          const rescheduledStart = new Date(Date.now() + 14400000);
+          const rescheduledEnd = new Date(Date.now() + 18000000);
+
+          await ClassModel.create({
+            _id: rescheduleClassId,
+            tenantId,
+            branchId,
+            batchId,
+            courseId,
+            instructorId,
+            name: 'Redis Reschedule Class',
+            classCode: 'CLS-RESCHED-P22',
+            scheduledStartAt: initialStart,
+            scheduledEndAt: initialEnd,
+            startDate: initialStart,
+            endDate: initialEnd,
+            status: 'SCHEDULED',
+            scheduleRevision: 0,
+            mode: 'ONLINE',
+            capacity: 30,
+            enrolledCount: 1,
+            enrolledStudents: [],
+            timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
+            daysOfWeek: [],
+            showOnWebsite: false
+          });
+
+          await ExternalMeetingModel.create({
+            tenantId,
+            branchId,
+            classId: rescheduleClassId.toString(),
+            provider: 'GOOGLE_MEET',
+            connectionId: conn._id,
+            organizerUserId: instructorId.toString(),
+            externalMeetingId: `meet_resched_${rescheduleClassId}`,
+            joinUrl: `https://meet.google.com/test-resched-${rescheduleClassId}`,
+            providerStatus: 'SCHEDULED',
+            scheduledStart: initialStart,
+            scheduledEnd: initialEnd,
+            timezone: 'UTC',
+            syncStatus: 'SYNCED'
+          });
+
+          // 5. 1B: Cancel Test Fixture
+          const cancelClassId = new mongoose.Types.ObjectId();
+          await ClassModel.create({
+            _id: cancelClassId,
+            tenantId,
+            branchId,
+            batchId,
+            courseId,
+            instructorId,
+            name: 'Redis Cancel Class',
+            classCode: 'CLS-CANCEL-P22',
+            scheduledStartAt: initialStart,
+            scheduledEndAt: initialEnd,
+            startDate: initialStart,
+            endDate: initialEnd,
+            status: 'SCHEDULED',
+            scheduleRevision: 0,
+            mode: 'ONLINE',
+            capacity: 30,
+            enrolledCount: 1,
+            enrolledStudents: [],
+            timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
+            daysOfWeek: [],
+            showOnWebsite: false
+          });
+
+          await ExternalMeetingModel.create({
+            tenantId,
+            branchId,
+            classId: cancelClassId.toString(),
+            provider: 'GOOGLE_MEET',
+            connectionId: conn._id,
+            organizerUserId: instructorId.toString(),
+            externalMeetingId: `meet_cancel_${cancelClassId}`,
+            joinUrl: `https://meet.google.com/test-cancel-${cancelClassId}`,
+            providerStatus: 'SCHEDULED',
+            scheduledStart: initialStart,
+            scheduledEnd: initialEnd,
+            timezone: 'UTC',
+            syncStatus: 'SYNCED'
+          });
+
+          const studentActor = {
+            userId: studentId.toString(),
+            roles: ['STUDENT'],
+            isHqActor: false,
+            isSuperAdmin: false
+          };
+
+          // --- EXECUTE 1A: Reschedule canonical Class during Redis outage ---
+          const clsToReschedule = await ClassModel.findById(rescheduleClassId);
+          clsToReschedule!.scheduledStartAt = rescheduledStart;
+          clsToReschedule!.scheduledEndAt = rescheduledEnd;
+          clsToReschedule!.scheduleRevision = 1;
+          await clsToReschedule!.save();
+
+          // Create durable IntegrationOperation for reschedule during outage
+          await IntegrationOperationModel.create({
+            tenantId,
+            provider: 'GOOGLE_MEET',
+            connectionId: conn._id,
+            operationType: 'RESCHEDULE_MEETING',
+            canonicalResourceType: 'Class',
+            canonicalResourceId: rescheduleClassId.toString(),
+            idempotencyKey: `RESCHEDULE_MEETING:${rescheduleClassId}:1`,
+            status: 'RETRYABLE',
+            attempts: 1,
+            payload: {
+              startAt: rescheduledStart,
+              endAt: rescheduledEnd,
+              timezone: 'UTC'
+            },
+            nextRetryAt: new Date(Date.now() - 1000)
+          });
+
+          // 3. Prove canonical Class reschedule commits
+          const savedReschedClass = await ClassModel.findById(rescheduleClassId);
+          expect(savedReschedClass?.scheduledStartAt?.getTime()).toBe(rescheduledStart.getTime());
+          expect(savedReschedClass?.scheduleRevision).toBe(1);
+
+          // 4. Prove durable integration work remains in Mongo
+          const reschedOp = await IntegrationOperationModel.findOne({
+            idempotencyKey: `RESCHEDULE_MEETING:${rescheduleClassId}:1`
+          });
+          expect(reschedOp).not.toBeNull();
+          expect(reschedOp?.status).toBe('RETRYABLE');
+
+          // --- EXECUTE 1B: Cancel canonical Class during Redis outage ---
+          const clsToCancel = await ClassModel.findById(cancelClassId);
+          clsToCancel!.status = 'CANCELLED';
+          await clsToCancel!.save();
+
+          // Create durable IntegrationOperation for cancel during outage
+          await IntegrationOperationModel.create({
+            tenantId,
+            provider: 'GOOGLE_MEET',
+            connectionId: conn._id,
+            operationType: 'CANCEL_MEETING',
+            canonicalResourceType: 'Class',
+            canonicalResourceId: cancelClassId.toString(),
+            idempotencyKey: `CANCEL_MEETING:${cancelClassId}:outage`,
+            status: 'RETRYABLE',
+            attempts: 1,
+            payload: { reason: 'Cancelled during outage' },
+            nextRetryAt: new Date(Date.now() - 1000)
+          });
+
+          // Prove student join endpoint denies immediately based on canonical Class state
+          await expect(
+            LiveClassOrchestratorService.getAuthorizedJoinInfo(tenantId.toString(), cancelClassId.toString(), studentActor)
+          ).rejects.toThrow(/cancelled/i);
         });
-
-        // 3. Prove canonical Class reschedule commits
-        const savedReschedClass = await ClassModel.findById(rescheduleClassId);
-        expect(savedReschedClass?.scheduledStartAt?.getTime()).toBe(rescheduledStart.getTime());
-        expect(savedReschedClass?.scheduleRevision).toBe(1);
-
-        // 4. Prove durable integration work remains in Mongo
-        const reschedOp = await IntegrationOperationModel.findOne({
-          idempotencyKey: `RESCHEDULE_MEETING:${rescheduleClassId}:1`
-        });
-        expect(reschedOp).not.toBeNull();
-        expect(reschedOp?.status).toBe('RETRYABLE');
-
-        // --- EXECUTE 1B: Cancel canonical Class during Redis outage ---
-        const clsToCancel = await ClassModel.findById(cancelClassId);
-        clsToCancel!.status = 'CANCELLED';
-        await clsToCancel!.save();
-
-        // Create durable IntegrationOperation for cancel during outage
-        await IntegrationOperationModel.create({
-          tenantId,
-          provider: 'GOOGLE_MEET',
-          connectionId: conn._id,
-          operationType: 'CANCEL_MEETING',
-          canonicalResourceType: 'Class',
-          canonicalResourceId: cancelClassId.toString(),
-          idempotencyKey: `CANCEL_MEETING:${cancelClassId}:outage`,
-          status: 'RETRYABLE',
-          attempts: 1,
-          payload: { reason: 'Cancelled during outage' },
-          nextRetryAt: new Date(Date.now() - 1000)
-        });
-
-        // Prove student join endpoint denies immediately based on canonical Class state
-        await expect(
-          LiveClassOrchestratorService.getAuthorizedJoinInfo(tenantId.toString(), cancelClassId.toString(), studentActor)
-        ).rejects.toThrow(/cancelled/i);
 
         return;
       }
@@ -321,17 +330,17 @@ suite(`Phase 22 real Redis ${mode?.toLowerCase()} proof`, () => {
       const queue = new Queue(APP_CONFIG.QUEUES.INTEGRATIONS, { connection });
       await queue.waitUntilReady();
 
-      const tenant = await TenantModel.findOne({ slug: marker }).setOptions({ bypassTenantFilter: true });
+      const tenant = await TenantModel.collection.findOne({ slug: marker });
       expect(tenant).not.toBeNull();
 
       // Recover Reschedule Operation
-      const reschedOp = await IntegrationOperationModel.findOne({
+      const reschedOp = await IntegrationOperationModel.collection.findOne({
         tenantId: tenant!._id,
         operationType: 'RESCHEDULE_MEETING'
-      }).setOptions({ bypassTenantFilter: true });
+      });
       expect(reschedOp).not.toBeNull();
 
-      const reschedClass = await ClassModel.findById(reschedOp!.canonicalResourceId).setOptions({ bypassTenantFilter: true });
+      const reschedClass = await ClassModel.collection.findOne({ _id: new mongoose.Types.ObjectId(reschedOp!.canonicalResourceId) });
       expect(reschedClass).not.toBeNull();
 
       const actor = {
@@ -353,17 +362,17 @@ suite(`Phase 22 real Redis ${mode?.toLowerCase()} proof`, () => {
       expect(new Date(recoveredMeeting!.scheduledStart).getTime()).toBe(reschedClass!.scheduledStartAt!.getTime());
 
       // Prove exactly 1 ExternalMeeting record exists in MongoDB (no duplicates)
-      const meetingCount = await ExternalMeetingModel.countDocuments({
+      const meetingCount = await ExternalMeetingModel.collection.countDocuments({
         tenantId: tenant!._id,
-        classId: reschedClass!._id.toString()
-      }).setOptions({ bypassTenantFilter: true });
+        classId: new mongoose.Types.ObjectId(reschedClass!._id)
+      });
       expect(meetingCount).toBe(1);
 
       // Recover Cancel Operation
-      const cancelOp = await IntegrationOperationModel.findOne({
+      const cancelOp = await IntegrationOperationModel.collection.findOne({
         tenantId: tenant!._id,
         operationType: 'CANCEL_MEETING'
-      }).setOptions({ bypassTenantFilter: true });
+      });
       expect(cancelOp).not.toBeNull();
 
       await LiveClassOrchestratorService.cancelMeetingForClass(
@@ -373,16 +382,16 @@ suite(`Phase 22 real Redis ${mode?.toLowerCase()} proof`, () => {
         actor
       );
 
-      const cancelledMeeting = await ExternalMeetingModel.findOne({
+      const cancelledMeeting = await ExternalMeetingModel.collection.findOne({
         tenantId: tenant!._id,
-        classId: cancelOp!.canonicalResourceId
-      }).setOptions({ bypassTenantFilter: true });
+        classId: new mongoose.Types.ObjectId(cancelOp!.canonicalResourceId)
+      });
 
       expect(cancelledMeeting?.providerStatus).toBe('CANCELLED');
       expect(cancelledMeeting?.syncStatus).toBe('SYNCED');
 
       // Prove ZERO meeting resurrection on join
-      const student = await UserModel.findOne({ tenantId: tenant!._id, email: 'student@p22-proof.test' }).setOptions({ bypassTenantFilter: true });
+      const student = await UserModel.collection.findOne({ tenantId: tenant!._id, email: 'student@p22-proof.test' });
       const studentActor = {
         userId: student!._id.toString(),
         roles: ['STUDENT'],

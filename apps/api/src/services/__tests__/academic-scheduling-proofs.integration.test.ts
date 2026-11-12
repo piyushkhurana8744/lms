@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { consumeNotificationIntent, processNotificationDelivery } from './notification-system-test-helper';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AcademicCalendarModel, AcademicRoomModel, AttendanceSessionModel,
@@ -25,7 +26,7 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
   const roomId = new mongoose.Types.ObjectId();
   const actor = { userId: adminId.toString() };
 
-  const run = <T>(fn: () => Promise<T>) =>
+  const run = <T>(fn: () => Promise<T> | any) =>
     tenantContextStorage.run(
       {
         currentTenantId: tenantId.toString(),
@@ -33,7 +34,7 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
         isPlatformContext: false,
         allowedTenantIds: [tenantId.toString()]
       },
-      fn
+      async () => await fn()
     );
 
   beforeAll(async () => {
@@ -194,15 +195,17 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
     expect(rescheduledClass.rescheduleHistory[0].reason).toBe('Faculty operational delay');
 
     // No duplicate class created in DB
-    const classCountInBatch = await ClassModel.countDocuments({ batchId, name: 'Proof 1 Class' });
+    const classCountInBatch = await run(() => ClassModel.countDocuments({ batchId, name: 'Proof 1 Class' }));
     expect(classCountInBatch).toBe(1);
 
     // 5. Assert Notification Outbox State while Redis was down
-    const pendingIntents = await NotificationIntentModel.find({
-      sourceId: classIdBefore,
-      type: 'class.rescheduled',
-      occurrenceKey: '1'
-    });
+    const pendingIntents = await run(() =>
+      NotificationIntentModel.find({
+        sourceId: classIdBefore,
+        type: 'class.rescheduled',
+        occurrenceKey: '1'
+      })
+    );
     expect(pendingIntents).toHaveLength(2); // 1 for student, 1 for instructor
     expect(pendingIntents.every((i) => i.status === 'PENDING')).toBe(true);
 
@@ -218,7 +221,7 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
 
     // Sweep pending outbox events
     for (const intent of pendingIntents) {
-      await NotificationService.consumeOutboxEvent(intent.eventId);
+      await consumeNotificationIntent(intent.eventId);
     }
 
     // Process created deliveries
@@ -226,7 +229,7 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
     expect(createdDeliveries).toHaveLength(2);
 
     for (const delivery of createdDeliveries) {
-      await NotificationService.processDelivery(delivery._id.toString());
+      await processNotificationDelivery(delivery._id.toString());
     }
 
     // 7. Assert Post-Recovery States
@@ -238,17 +241,17 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
     expect(sendEmailMock).toHaveBeenCalledTimes(2);
 
     // Verify Academic Class state remained completely untouched by recovery
-    const postRecoveryClass = await ClassModel.findById(classIdBefore);
+    const postRecoveryClass = await run(() => ClassModel.findById(classIdBefore));
     expect(postRecoveryClass?.scheduleRevision).toBe(1);
     expect(postRecoveryClass?.rescheduleHistory).toHaveLength(1);
     expect(postRecoveryClass?.scheduledStartAt).toEqual(startNew);
 
     // 8. Replay recovery sweep again to prove zero duplicates
     for (const intent of pendingIntents) {
-      await NotificationService.consumeOutboxEvent(intent.eventId);
+      await consumeNotificationIntent(intent.eventId);
     }
     for (const delivery of createdDeliveries) {
-      await NotificationService.processDelivery(delivery._id.toString());
+      await processNotificationDelivery(delivery._id.toString());
     }
 
     expect(await NotificationModel.countDocuments({ sourceId: classIdBefore, type: 'class.rescheduled' })).toBe(2);
@@ -312,16 +315,18 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
     expect(cancelledClass.cancelledBy?.toString()).toBe(adminId.toString());
     expect(cancelledClass.scheduleRevision).toBe(1);
 
-    const classInDb = await ClassModel.findById(classId);
+    const classInDb = await run(() => ClassModel.findById(classId));
     expect(classInDb?.status).toBe('CANCELLED');
     expect(classInDb?.cancellationReason).toBe('Severe weather emergency');
 
     // 5. Notification Assertions: Durable intent persisted in PENDING state
-    const pendingIntents = await NotificationIntentModel.find({
-      sourceId: classId,
-      type: 'class.cancelled',
-      occurrenceKey: '1'
-    });
+    const pendingIntents = await run(() =>
+      NotificationIntentModel.find({
+        sourceId: classId,
+        type: 'class.cancelled',
+        occurrenceKey: '1'
+      })
+    );
     expect(pendingIntents).toHaveLength(2); // 1 student, 1 instructor
     expect(pendingIntents.every((i) => i.status === 'PENDING')).toBe(true);
 
@@ -329,7 +334,7 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
     outboxSpy.mockRestore();
 
     for (const intent of pendingIntents) {
-      await NotificationService.consumeOutboxEvent(intent.eventId);
+      await consumeNotificationIntent(intent.eventId);
     }
 
     const cancelDeliveries = await NotificationDeliveryModel.find({
@@ -340,7 +345,7 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
     expect(cancelDeliveries.length).toBeGreaterThanOrEqual(2);
 
     for (const delivery of cancelDeliveries) {
-      await NotificationService.processDelivery(delivery._id.toString());
+      await processNotificationDelivery(delivery._id.toString());
     }
 
     const deliveredCancel = await NotificationDeliveryModel.find({
@@ -368,10 +373,12 @@ suite('Phase 15 Academic Scheduling Final Two Proofs', () => {
     expect(secondCancel.scheduleRevision).toBe(1); // Not incremented again
 
     // No duplicate notification intent created
-    const intentsAfterSecondCancel = await NotificationIntentModel.find({
-      sourceId: classId,
-      type: 'class.cancelled'
-    });
+    const intentsAfterSecondCancel = await run(() =>
+      NotificationIntentModel.find({
+        sourceId: classId,
+        type: 'class.cancelled'
+      })
+    );
     expect(intentsAfterSecondCancel).toHaveLength(2); // Still exactly 2
 
     // 8. Resource Release Proof: Book replacement class using released instructor, room, and time interval

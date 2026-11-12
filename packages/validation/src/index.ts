@@ -12,7 +12,7 @@ export const RegisterSchema = z.object({
   email: z.string().email('Invalid email address format'),
   password: z.string().min(8, 'Password must be at least 8 characters long'),
   phone: z.string().optional(),
-  tenantSlug: z.string().optional()
+  tenantSlug: z.string().min(2, 'Tenant workspace is required')
 });
 
 export const ForgotPasswordSchema = z.object({
@@ -1108,6 +1108,17 @@ export const CompleteFollowUpSchema = z.object({
   scheduleNextNote: z.string().trim().optional()
 }).strip();
 
+export const AdmissionFeeDetailsSchema = z.object({
+  baseAmount: z.coerce.number().min(0, 'Base course fee must be non-negative'),
+  discountAmount: z.coerce.number().min(0).optional().default(0),
+  discountReason: z.string().trim().optional(),
+  paidAmount: z.coerce.number().min(0).optional().default(0),
+  paymentMethod: z.enum(['CASH', 'UPI', 'BANK_TRANSFER', 'CARD', 'CHEQUE', 'ONLINE_GATEWAY', 'OTHER']).optional().default('UPI'),
+  transactionReference: z.string().trim().optional(),
+  installmentsCount: z.coerce.number().int().min(1).max(24).optional().default(1),
+  notes: z.string().trim().optional()
+}).strip();
+
 export const CreateAdmissionSchema = z.object({
   applicant: z.object({
     fullName: z.string().trim().optional(),
@@ -1128,11 +1139,13 @@ export const CreateAdmissionSchema = z.object({
   batchId: z.string().trim().optional(),
   branchId: z.string().trim().optional(),
   assignedCounsellor: z.string().trim().optional(),
+  feeDetails: AdmissionFeeDetailsSchema.optional(),
   notes: z.string().trim().optional()
 }).strip();
 
 export const ConvertAdmissionSchema = z.object({
   batchId: z.string().trim().optional(),
+  feeDetails: AdmissionFeeDetailsSchema.optional(),
   sendWelcomeEmail: z.boolean().optional().default(true)
 }).strip();
 
@@ -1747,7 +1760,12 @@ export const CreateClassMeetingSchema = z.object({
   topic: z.string().max(200).optional(),
   agenda: z.string().max(1000).optional(),
   password: z.string().max(50).optional(),
-  autoRecord: z.boolean().optional().default(false)
+  autoRecord: z.boolean().optional().default(false),
+  muteParticipantsOnEntry: z.boolean().optional().default(true),
+  participantVideoOnEntry: z.boolean().optional().default(false),
+  waitingRoom: z.boolean().optional().default(true),
+  allowParticipantsToUnmute: z.boolean().optional().default(false),
+  allowParticipantsToStartVideo: z.boolean().optional().default(false)
 }).strip();
 
 export const RescheduleClassMeetingSchema = z.object({

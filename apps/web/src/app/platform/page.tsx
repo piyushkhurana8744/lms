@@ -86,6 +86,13 @@ export default function PlatformCommandCenterPage() {
   const [impersonationModalTarget, setImpersonationModalTarget] = useState<IPlatformUser | null>(null);
   const [impersonationReasonInput, setImpersonationReasonInput] = useState('');
 
+  useEffect(() => {
+    const requestedTab = new URLSearchParams(window.location.search).get('tab');
+    if (requestedTab === 'users' || requestedTab === 'system' || requestedTab === 'tenants') {
+      setActiveTab(requestedTab);
+    }
+  }, []);
+
   const fetchPlatformData = useCallback(async () => {
     setIsLoading(true);
     setFeedback(null);
@@ -121,9 +128,13 @@ export default function PlatformCommandCenterPage() {
   }, [selectedTenantFilter, userSearch]);
 
   useEffect(() => {
-    if (!authLoading && isAuthenticated && user) {
+    if (!authLoading) {
+      if (!isAuthenticated || !user) {
+        router.replace('/login?redirect=/platform');
+        return;
+      }
       if (!user.isSuperAdmin) {
-        router.push('/admin');
+        router.replace('/admin');
         return;
       }
       fetchPlatformData();
@@ -156,7 +167,7 @@ export default function PlatformCommandCenterPage() {
   };
 
   const handleConfirmImpersonate = async () => {
-    if (!impersonationModalTarget) return;
+    if (!impersonationModalTarget || isActionPending) return;
     const reason = impersonationReasonInput.trim();
     if (!reason) {
       setFeedback({ type: 'error', message: 'An audit reason is required to initiate impersonation.' });
@@ -166,8 +177,6 @@ export default function PlatformCommandCenterPage() {
     const targetUser = impersonationModalTarget;
     setIsActionPending(targetUser.id);
     try {
-      await impersonate(targetUser.id, reason);
-
       // Determine appropriate panel destination based on role
       const primaryRole = (
         targetUser.roles?.[0] ||
@@ -183,20 +192,27 @@ export default function PlatformCommandCenterPage() {
 
       setFeedback({
         type: 'success',
-        message: `Impersonation active. Launching ${primaryRole} portal...`
+        message: `Impersonation active. Launching ${primaryRole || 'Member'} portal...`
       });
       setImpersonationModalTarget(null);
 
-      setTimeout(() => {
-        window.location.href = destination;
-      }, 400);
+      const searchParams =
+        typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+      const explicitReturnTo = searchParams?.get('returnTo');
+      const initiatingPath =
+        explicitReturnTo ||
+        (typeof window !== 'undefined'
+          ? `${window.location.pathname}${window.location.search}`
+          : '/platform');
+
+      await impersonate(targetUser.id, reason, destination, initiatingPath);
     } catch (err: any) {
       setFeedback({ type: 'error', message: err.message || 'Failed to initiate secret login' });
       setIsActionPending(null);
     }
   };
 
-  if (authLoading || (!user?.isSuperAdmin && isAuthenticated)) {
+  if (authLoading || !isAuthenticated || !user?.isSuperAdmin) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[var(--brand-background)] text-[var(--brand-text)]">
         <div className="flex flex-col items-center gap-3 p-8 rounded-3xl bg-[var(--bg-surface)] border border-[var(--brand-border)] shadow-xl">

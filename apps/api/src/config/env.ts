@@ -1,6 +1,11 @@
 import dotenv from 'dotenv';
+import path from 'path';
 import { z } from 'zod';
 
+// Turbo runs this package with apps/api as the working directory. Load the
+// repository-level environment first so shared infrastructure credentials
+// (notably the hosted MONGO_URI) win over package-local development defaults.
+dotenv.config({ path: path.resolve(process.cwd(), '../../.env') });
 dotenv.config();
 
 const envSchema = z.object({

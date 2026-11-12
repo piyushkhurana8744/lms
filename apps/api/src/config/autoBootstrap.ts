@@ -6,7 +6,7 @@ import {
   OrganizationBrandingModel
 } from '@edtech/database';
 import { SYSTEM_ROLE_PERMISSIONS } from '@edtech/permissions';
-import { hashPassword, logger } from '@edtech/utils';
+import { hashPassword, logger, tenantContextStorage } from '@edtech/utils';
 
 export async function autoBootstrapInitialTenant(): Promise<void> {
   try {
@@ -36,54 +36,64 @@ export async function autoBootstrapInitialTenant(): Promise<void> {
       }
     });
 
-    // 2. Create Super Admin Role
-    const superAdminRole = await RoleModel.create({
-      tenantId: tenant._id,
-      name: 'Super Admin',
-      slug: 'super-admin',
-      description: 'Platform Super Administrator with all permissions',
-      permissions: SYSTEM_ROLE_PERMISSIONS.SUPER_ADMIN,
-      isSystemRole: true
-    });
-
-    // 3. Create Super Admin User
-    const passwordHash = await hashPassword(password);
-    await UserModel.create({
-      tenantId: tenant._id,
-      allowedTenantIds: [tenant._id],
-      name,
-      email,
-      passwordHash,
-      status: 'ACTIVE',
-      emailVerified: true,
-      isSuperAdmin: true,
-      roles: [superAdminRole._id]
-    });
-
-    // 4. Create Organization Settings
-    await OrganizationSettingsModel.create({
-      tenantId: tenant._id,
-      profile: {
-        organizationName: companyName,
-        contactEmail: email,
-        timezone: 'Asia/Kolkata',
-        currency: 'INR'
+    // 2. Create Super Admin Role & Workspace Artifacts in Tenant Context
+    await tenantContextStorage.run(
+      {
+        currentTenantId: tenant._id.toString(),
+        currentUserId: 'system-bootstrap',
+        isPlatformContext: true,
+        allowedTenantIds: [tenant._id.toString()]
       },
-      lmsPreferences: {
-        allowStudentSelfRegistration: true,
-        requireEmailVerification: false
-      }
-    });
+      async () => {
+        const superAdminRole = await RoleModel.create({
+          tenantId: tenant._id,
+          name: 'Super Admin',
+          slug: 'super-admin',
+          description: 'Platform Super Administrator with all permissions',
+          permissions: SYSTEM_ROLE_PERMISSIONS.SUPER_ADMIN,
+          isSystemRole: true
+        });
 
-    // 5. Create Organization Branding
-    await OrganizationBrandingModel.create({
-      tenantId: tenant._id,
-      primaryColor: '#BE1E2E',
-      secondaryColor: '#1A1A1A',
-      accentColor: '#FF3B30',
-      fontFamily: 'Inter',
-      companyName
-    });
+        // 3. Create Super Admin User
+        const passwordHash = await hashPassword(password);
+        await UserModel.create({
+          tenantId: tenant._id,
+          allowedTenantIds: [tenant._id],
+          name,
+          email,
+          passwordHash,
+          status: 'ACTIVE',
+          emailVerified: true,
+          isSuperAdmin: true,
+          roles: [superAdminRole._id]
+        });
+
+        // 4. Create Organization Settings
+        await OrganizationSettingsModel.create({
+          tenantId: tenant._id,
+          profile: {
+            organizationName: companyName,
+            contactEmail: email,
+            timezone: 'Asia/Kolkata',
+            currency: 'INR'
+          },
+          lmsPreferences: {
+            allowStudentSelfRegistration: true,
+            requireEmailVerification: false
+          }
+        });
+
+        // 5. Create Organization Branding
+        await OrganizationBrandingModel.create({
+          tenantId: tenant._id,
+          primaryColor: '#BE1E2E',
+          secondaryColor: '#1A1A1A',
+          accentColor: '#FF3B30',
+          fontFamily: 'Inter',
+          companyName
+        });
+      }
+    );
 
     logger.info(`[Bootstrap] Default tenant '${tenant.name}' created with Super Admin (${email}).`);
   } catch (error) {

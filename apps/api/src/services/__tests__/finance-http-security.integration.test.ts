@@ -20,9 +20,9 @@ suite('finance HTTP security and receipt delivery', () => {
   const ids: Record<string, mongoose.Types.ObjectId> = {};
   const tokens: Record<string, string> = {};
 
-  const request = (token: string, method: string, path: string, body?: any) => new Promise<{ status: number; headers: http.IncomingHttpHeaders; raw: Buffer; json?: any }>((resolve, reject) => {
+  const request = (token: string | null, method: string, path: string, body?: any, extraHeaders: Record<string, string> = {}) => new Promise<{ status: number; headers: http.IncomingHttpHeaders; raw: Buffer; json?: any }>((resolve, reject) => {
     const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
-    const req = http.request({ hostname: '127.0.0.1', port, path, method, headers: { authorization: `Bearer ${token}`, ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}) } }, (res) => {
+    const req = http.request({ hostname: '127.0.0.1', port, path, method, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}), ...extraHeaders } }, (res) => {
       const chunks: Buffer[] = []; res.on('data', (chunk) => chunks.push(chunk)); res.on('end', () => {
         const raw = Buffer.concat(chunks); let json: any; try { json = JSON.parse(raw.toString()); } catch { /* binary */ }
         resolve({ status: res.statusCode || 0, headers: res.headers, raw, json });
@@ -56,6 +56,7 @@ suite('finance HTTP security and receipt delivery', () => {
   }
 
   beforeAll(async () => {
+    process.env.INTERNAL_WORKER_SECRET ||= 'wave07-test-worker-secret';
     process.env.ALLOW_LOCAL_STORAGE_FALLBACK = 'true'; process.env.ALLOW_LOCAL_STORAGE = 'true';
     await connectDatabase(process.env.MONGO_INTEGRATION_URI || 'mongodb://localhost:27017/edtech_lms_test?replicaSet=rs0');
     for (const model of [FinancialLedgerModel, OutboxEventModel, RefundModel, ReceiptModel, PaymentModel, StudentFeePlanModel, CourseModel, OrganizationMemberModel, SessionModel, UserModel, PaymentGatewayConfigModel, TenantModel]) await model.collection.deleteMany({});
@@ -215,5 +216,45 @@ suite('finance HTTP security and receipt delivery', () => {
     expect((await request(tokens.AdminA, 'POST', `/api/v1/finance/refunds/${ids.b1refundId}/reconcile`)).status).toBe(404);
     expect((await request(tokens.AdminA, 'POST', `/api/v1/finance/payments/${ids.b1paymentId}/reconcile`)).status).toBe(404);
     expect(await snapshot()).toEqual(before);
+  });
+
+  it('enforces worker-secret authentication, tenant validation, and artifact isolation on internal finance endpoints', async () => {
+    const { authorizeInternalSystemCaller } = await import('@edtech/database');
+    const secret = process.env.INTERNAL_WORKER_SECRET!;
+    const auth = authorizeInternalSystemCaller(secret, 'finance-test-worker')!;
+
+    const receiptUrl = `/api/v1/internal/finance/receipt-artifact/${ids.a1receiptId}`;
+    const paymentUrl = `/api/v1/internal/finance/payment-reconcile/${ids.a1paymentId}`;
+    const refundUrl = `/api/v1/internal/finance/refund-reconcile/${ids.a1refundId}`;
+
+    // 1. Missing worker secret -> 401
+    expect((await request(null, 'POST', receiptUrl)).status).toBe(401);
+    expect((await request(null, 'POST', paymentUrl)).status).toBe(401);
+    expect((await request(null, 'POST', refundUrl)).status).toBe(401);
+
+    // 2. Invalid worker secret -> 401
+    expect((await request(null, 'POST', receiptUrl, undefined, { 'x-internal-worker-secret': 'wrong' })).status).toBe(401);
+    expect((await request(null, 'POST', paymentUrl, undefined, { 'x-internal-worker-secret': 'wrong' })).status).toBe(401);
+
+    // 3. Missing or invalid tenant header -> 400
+    expect((await request(null, 'POST', receiptUrl, undefined, { 'x-internal-worker-secret': secret })).status).toBe(400);
+    expect((await request(null, 'POST', receiptUrl, undefined, { 'x-internal-worker-secret': secret, 'x-tenant-id': 'not-an-oid' })).status).toBe(400);
+    expect((await request(null, 'POST', paymentUrl, undefined, { 'x-internal-worker-secret': secret })).status).toBe(400);
+
+    // 4. Cross-tenant mismatch (record is in tenantA, request specifies tenantB) -> 400 or 500 error, zero mutation
+    const crossReceipt = await request(null, 'POST', receiptUrl, undefined, { 'x-internal-worker-secret': secret, 'x-tenant-id': ids.tenantB.toString() });
+    expect([400, 500]).toContain(crossReceipt.status);
+
+    const crossPayment = await request(null, 'POST', paymentUrl, undefined, { 'x-internal-worker-secret': secret, 'x-tenant-id': ids.tenantB.toString() });
+    expect([400, 500]).toContain(crossPayment.status);
+
+    // 5. Valid worker call with matching tenant -> 200
+    const validReceipt = await request(null, 'POST', receiptUrl, undefined, { 'x-internal-worker-secret': secret, 'x-tenant-id': ids.tenantA.toString() });
+    expect(validReceipt.status).toBe(200);
+
+    // 6. Direct ReceiptArtifactService.generateTrusted boundary tests
+    await expect(ReceiptArtifactService.generateTrusted(ids.a1receiptId.toString(), { principal: 'forged' } as any)).rejects.toThrow('Trusted internal system authority is required');
+    await expect(ReceiptArtifactService.generateTrusted(ids.a1receiptId.toString(), auth, ids.tenantB.toString())).rejects.toThrow('Receipt tenant binding rejected');
+    await expect(ReceiptArtifactService.generateTrusted(ids.a1receiptId.toString())).rejects.toThrow('Tenant context or authorized system capability required');
   });
 });

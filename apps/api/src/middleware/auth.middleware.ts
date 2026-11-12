@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import { verifyAccessToken } from '@edtech/utils';
-import { SessionModel, UserModel, OrganizationMemberModel, RoleModel } from '@edtech/database';
+import { tenantContextStorage, verifyAccessToken } from '@edtech/utils';
+import { runAuthBootstrapOperation, SessionModel, UserModel, OrganizationMemberModel, RoleModel } from '@edtech/database';
 import { PERMISSIONS, SYSTEM_ROLE_PERMISSIONS } from '@edtech/permissions';
 import { ApiResponse } from '../utils/apiResponse';
 
@@ -20,6 +20,7 @@ export interface AuthenticatedRequest extends Request {
     impersonatedBy?: string | null;
     isImpersonated?: boolean;
     impersonationReason?: string | null;
+    impersonationReturnTo?: string | null;
     roles: string[];
     permissions: string[];
   };
@@ -55,9 +56,13 @@ export async function authenticate(
   if (!session || session.revokedAt || new Date() > session.expiresAt) {
     return ApiResponse.error(res, 'Session has been revoked or expired', 401, 'ERR_SESSION_REVOKED');
   }
+  if (decoded.tokenVersion !== session.tokenVersion) {
+    return ApiResponse.error(res, 'Access token has been rotated', 401, 'ERR_TOKEN_ROTATED');
+  }
 
   // 4. Fetch User record and populate live roles & permissions
-  const user = await UserModel.findById(decoded.sub).populate('roles');
+  if (decoded.sub !== session.userId.toString()) return ApiResponse.error(res, 'Session identity mismatch', 401, 'ERR_UNAUTHORIZED');
+  const user = await runAuthBootstrapOperation('SESSION_USER_BY_ID', decoded.sub, () => UserModel.findOne({ _id: decoded.sub }).setOptions({ authBootstrapPolicy: 'SESSION_USER_BY_ID' }));
   if (!user) {
     return ApiResponse.error(res, 'User not found or session invalid', 401, 'ERR_UNAUTHORIZED');
   }
@@ -76,48 +81,52 @@ export async function authenticate(
     allowedTenantIds.push(user.tenantId.toString());
   }
 
+  const permissionsSet = new Set<string>();
+  const rolesList: string[] = [];
+
   // SuperAdmin default tenant context resolution
   if (user.isSuperAdmin && !activeTenantId && allowedTenantIds.length > 0) {
     activeTenantId = allowedTenantIds[0];
   }
+  if (activeTenantId) {
+    await tenantContextStorage.run(
+      { currentTenantId: activeTenantId, currentUserId: user._id.toString(), isPlatformContext: false, allowedTenantIds },
+      async () => {
+        await user.populate('roles');
+        try {
+          const member = await OrganizationMemberModel.findOne({
+            tenantId: activeTenantId,
+            userId: user._id,
+            status: 'ACTIVE'
+          });
 
-  const permissionsSet = new Set<string>();
-  const rolesList: string[] = [];
+          if (member) {
+            rolesList.push(member.role);
+            // Default system permissions for this role
+            const systemPerms = SYSTEM_ROLE_PERMISSIONS[member.role] || [];
+            systemPerms.forEach((p) => permissionsSet.add(p));
+
+            // Also check if there is a custom role in this tenant matching the role slug/name
+            const customRole = await RoleModel.findOne({
+              tenantId: activeTenantId,
+              slug: member.role.toLowerCase()
+            });
+
+            if (customRole && Array.isArray(customRole.permissions)) {
+              customRole.permissions.forEach((p) => permissionsSet.add(p));
+            }
+          }
+        } catch {
+          // If organization member check fails, proceed with default user roles
+        }
+      }
+    );
+  }
 
   // Super Admin bypass
   if (user.isSuperAdmin) {
     permissionsSet.add(PERMISSIONS.SUPERADMIN_ALL);
     rolesList.push('SUPER_ADMIN');
-  }
-
-  // Multi-tenant resolution: If active tenant is specified, check membership
-  if (activeTenantId) {
-    try {
-      const member = await OrganizationMemberModel.findOne({
-        tenantId: activeTenantId,
-        userId: user._id,
-        status: 'ACTIVE'
-      });
-
-      if (member) {
-        rolesList.push(member.role);
-        // Default system permissions for this role
-        const systemPerms = SYSTEM_ROLE_PERMISSIONS[member.role] || [];
-        systemPerms.forEach((p) => permissionsSet.add(p));
-
-        // Also check if there is a custom role in this tenant matching the role slug/name
-        const customRole = await RoleModel.findOne({
-          tenantId: activeTenantId,
-          slug: member.role.toLowerCase()
-        });
-
-        if (customRole && Array.isArray(customRole.permissions)) {
-          customRole.permissions.forEach((p) => permissionsSet.add(p));
-        }
-      }
-    } catch {
-      // If organization member check fails, proceed with default user roles
-    }
   }
 
   // Fallback: Populate static user roles if no active tenant membership found
@@ -148,6 +157,7 @@ export async function authenticate(
     impersonatedBy: session.impersonatedBy ? session.impersonatedBy.toString() : null,
     isImpersonated: Boolean(session.impersonatedBy),
     impersonationReason: (session as any).impersonationReason || null,
+    impersonationReturnTo: (session as any).impersonationReturnTo || null,
     roles: rolesList,
     permissions: Array.from(permissionsSet)
   };

@@ -85,7 +85,7 @@ export class PublicTenantService {
       const customDomainDoc = await OrganizationDomainModel.findOne({
         customDomain: normalizedHost,
         status: { $in: ['VERIFIED', 'ACTIVE'] }
-      }).lean();
+      }).setOptions({ publicReadPolicy: 'DOMAIN_RESOLUTION' }).select('tenantId').lean();
 
       if (customDomainDoc) {
         const tenant = await TenantModel.findOne({
@@ -116,7 +116,7 @@ export class PublicTenantService {
         // 1. Direct platformSubdomain match in OrganizationDomainModel
         const platformDomainDoc = await OrganizationDomainModel.findOne({
           platformSubdomain: normalizedHost
-        }).lean();
+        }).setOptions({ publicReadPolicy: 'DOMAIN_RESOLUTION' }).select('tenantId').lean();
 
         if (platformDomainDoc) {
           const tenant = await TenantModel.findOne({
@@ -197,15 +197,6 @@ export class PublicTenantService {
 
           if (tenantBySlug) {
             result = { tenant: (tenantBySlug as unknown) as ITenantDocument, hostnameType: 'PLATFORM' };
-          } else {
-            // First active tenant fallback
-            const fallbackTenant = await TenantModel.findOne({ status: 'ACTIVE' })
-              .sort({ createdAt: 1 })
-              .lean();
-
-            if (fallbackTenant) {
-              result = { tenant: (fallbackTenant as unknown) as ITenantDocument, hostnameType: 'PLATFORM' };
-            }
           }
         }
       }

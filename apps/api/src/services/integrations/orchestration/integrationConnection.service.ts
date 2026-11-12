@@ -214,7 +214,16 @@ export class IntegrationConnectionService {
         : config.scopes.filter(scope => !connection.scopes.includes(scope));
       connection.status = missingScopes.length ? 'MISSING_SCOPE' : 'CONNECTED';
       connection.expiresAt = new Date(Date.now() + Number(tokens.expires_in || 3600) * 1000);
-      connection.metadata = { ...(connection.metadata || {}), accountEmail, displayName: identity?.display_name || identity?.displayName || identity?.name || 'Zoom Host Account', missingScopes };
+      connection.metadata = {
+        ...(connection.metadata || {}),
+        accountEmail,
+        displayName: identity?.display_name || identity?.displayName || identity?.name || 'Zoom Host Account',
+        missingScopes,
+        // A successful provider callback promotes an old demo placeholder into
+        // a real OAuth-backed connection. Never retain the seed marker.
+        isDemo: false,
+        oauthVerifiedAt: new Date().toISOString()
+      };
       await connection.save();
       return this.toDTO(connection);
     });

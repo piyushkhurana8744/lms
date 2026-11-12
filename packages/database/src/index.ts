@@ -3,6 +3,8 @@ import { getTransactionCapabilityOverride } from './transaction';
 export * from './transaction';
 
 export * from './plugin/tenantIsolationPlugin';
+export * from './authorizedExecutionContext';
+export * from './tenantModelPolicyRegistry';
 export * from './models/tenant.model';
 export * from './models/user.model';
 export * from './models/role.model';
@@ -80,6 +82,7 @@ export * from './models/integrationOAuthState.model';
 export * from './models/liveMeetingAssociationHistory.model';
 export * from './models/attendanceEvidence.model';
 export * from './models/liveClassRecording.model';
+export * from './models/trainerZoomAccount.model';
 
 
 

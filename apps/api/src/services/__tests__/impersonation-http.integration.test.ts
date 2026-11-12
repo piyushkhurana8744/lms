@@ -13,7 +13,7 @@ import {
   disconnectDatabase
 } from '@edtech/database';
 import { PERMISSIONS } from '@edtech/permissions';
-import { signAccessToken } from '@edtech/utils';
+import { hashPassword, signAccessToken } from '@edtech/utils';
 import { createApp } from '../../app';
 
 const suite = process.env.RUN_MONGO_INTEGRATION === '1' ? describe : describe.skip;
@@ -204,6 +204,19 @@ suite('Phase 22.5 Superadmin Impersonation & Logout HTTP Security Matrix', () =>
     await createActor('suspended_user', ids.tenantA, 'STUDENT', 'ALL', [], false, 'SUSPENDED');
     await createActor('instructor_b', ids.tenantB, 'INSTRUCTOR', 'ALL', [], false);
 
+    ids.credential_user = new mongoose.Types.ObjectId();
+    await UserModel.collection.insertOne({
+      _id: ids.credential_user,
+      tenantId: ids.tenantA,
+      allowedTenantIds: [ids.tenantA],
+      name: 'Credential Boundary User',
+      email: 'credential-boundary@phase225-http.test',
+      passwordHash: await hashPassword('CorrectPassword123!'),
+      status: 'ACTIVE',
+      isSuperAdmin: false,
+      roles: []
+    });
+
     await new Promise<void>((resolve) => {
       server = createApp().listen(0, '127.0.0.1', () => {
         port = (server.address() as any).port;
@@ -220,6 +233,16 @@ suite('Phase 22.5 Superadmin Impersonation & Logout HTTP Security Matrix', () =>
   });
 
   describe('1. Impersonation Access Controls & Validation', () => {
+    it('normal login rejects invalid credentials without creating a Secret Login path', async () => {
+      const res = await makeRequest(null, '/api/v1/auth/login', 'POST', {
+        email: 'credential-boundary@phase225-http.test',
+        password: 'WrongPassword123!'
+      });
+      expect(res.status).toBe(401);
+      expect(res.json.error.message).toBe('Invalid email address or password');
+      expect(await SessionModel.countDocuments({ userId: ids.credential_user })).toBe(0);
+    });
+
     it('Tenant Admin is forbidden from starting impersonation (403)', async () => {
       const res = await makeRequest(tokens.tenant_admin, '/api/v1/platform/impersonation/start', 'POST', {
         targetUserId: ids.instructor_a1.toString(),
@@ -431,6 +454,38 @@ suite('Phase 22.5 Superadmin Impersonation & Logout HTTP Security Matrix', () =>
     it('Subsequent protected requests with the revoked session token are rejected (401)', async () => {
       const res = await makeRequest(testSessionToken, '/api/v1/auth/me');
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe('4. Impersonated Session Expiry & Logout', () => {
+    it('rejects an expired impersonated session even when its JWT is still valid', async () => {
+      const started = await makeRequest(tokens.superadmin, '/api/v1/platform/impersonation/start', 'POST', {
+        targetUserId: ids.instructor_b.toString(),
+        reason: 'Expiry enforcement test'
+      });
+      expect(started.status).toBe(200);
+      const accessToken = started.json.data.tokens.accessToken;
+      const session = await SessionModel.findOne({ userId: ids.instructor_b, impersonatedBy: ids.superadmin });
+      expect(session).not.toBeNull();
+      await SessionModel.collection.updateOne({ _id: session!._id }, { $set: { expiresAt: new Date(Date.now() - 1000) } });
+
+      const me = await makeRequest(accessToken, '/api/v1/auth/me');
+      expect(me.status).toBe(401);
+      expect(me.json.error.code).toBe('ERR_SESSION_REVOKED');
+    });
+
+    it('logout revokes the active impersonated session and rejects subsequent requests', async () => {
+      const started = await makeRequest(tokens.superadmin, '/api/v1/platform/impersonation/start', 'POST', {
+        targetUserId: ids.student_a.toString(),
+        reason: 'Impersonated logout test'
+      });
+      expect(started.status).toBe(200);
+      const accessToken = started.json.data.tokens.accessToken;
+
+      const logout = await makeRequest(accessToken, '/api/v1/auth/logout', 'POST');
+      expect(logout.status).toBe(200);
+      const me = await makeRequest(accessToken, '/api/v1/auth/me');
+      expect(me.status).toBe(401);
     });
   });
 });

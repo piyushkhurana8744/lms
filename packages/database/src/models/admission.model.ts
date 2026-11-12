@@ -42,6 +42,18 @@ export interface IAdmissionDocument extends Document {
   admittedBy?: Types.ObjectId;
   studentUserId?: Types.ObjectId;
   enrollmentId?: Types.ObjectId;
+  feePlanId?: Types.ObjectId;
+  initialPaymentId?: Types.ObjectId;
+  feeDetails?: {
+    baseAmount: number;
+    discountAmount?: number;
+    discountReason?: string;
+    paidAmount?: number;
+    paymentMethod?: 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'CARD' | 'CHEQUE' | 'ONLINE_GATEWAY' | 'OTHER';
+    transactionReference?: string;
+    installmentsCount?: number;
+    notes?: string;
+  };
   notes?: string;
   createdBy: Types.ObjectId;
   updatedBy: Types.ObjectId;
@@ -95,6 +107,22 @@ const AdmissionSchema = new Schema<IAdmissionDocument>(
     admittedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     studentUserId: { type: Schema.Types.ObjectId, ref: 'User', default: null },
     enrollmentId: { type: Schema.Types.ObjectId, ref: 'Enrollment', default: null },
+    feePlanId: { type: Schema.Types.ObjectId, ref: 'StudentFeePlan', default: null },
+    initialPaymentId: { type: Schema.Types.ObjectId, ref: 'Payment', default: null },
+    feeDetails: {
+      baseAmount: { type: Number, min: 0 },
+      discountAmount: { type: Number, default: 0, min: 0 },
+      discountReason: { type: String, trim: true },
+      paidAmount: { type: Number, default: 0, min: 0 },
+      paymentMethod: {
+        type: String,
+        enum: ['CASH', 'UPI', 'BANK_TRANSFER', 'CARD', 'CHEQUE', 'ONLINE_GATEWAY', 'OTHER'],
+        default: 'UPI'
+      },
+      transactionReference: { type: String, trim: true },
+      installmentsCount: { type: Number, default: 1, min: 1 },
+      notes: { type: String, trim: true }
+    },
     notes: { type: String, trim: true },
     createdBy: { type: Schema.Types.ObjectId, ref: 'User', required: true },
     updatedBy: { type: Schema.Types.ObjectId, ref: 'User', required: true }

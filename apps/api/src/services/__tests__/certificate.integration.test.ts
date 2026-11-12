@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { consumeNotificationIntent, processNotificationDelivery } from './notification-system-test-helper';
 import QRCode from 'qrcode';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -56,7 +57,7 @@ suite('Phase 13 Certificates & Credential Verification MongoDB Integration Suite
         isPlatformContext: false,
         allowedTenantIds: [tenantAId.toString()]
       },
-      fn
+      async () => await fn()
     );
 
   const runB = <T>(fn: () => Promise<T>) =>
@@ -67,7 +68,7 @@ suite('Phase 13 Certificates & Credential Verification MongoDB Integration Suite
         isPlatformContext: false,
         allowedTenantIds: [tenantBId.toString()]
       },
-      fn
+      async () => await fn()
     );
 
   beforeAll(async () => {
@@ -535,12 +536,12 @@ suite('Phase 13 Certificates & Credential Verification MongoDB Integration Suite
     setNotificationHandoffFailure(false);
     expect(certificate.status).toBe('ISSUED');
     const eventId = `certificate.issued:${certificate.id}`;
-    expect((await NotificationIntentModel.findOne({ eventId }))?.status).toBe('PENDING');
+    expect((await runA(() => NotificationIntentModel.findOne({ eventId })))?.status).toBe('PENDING');
     expect(await NotificationModel.countDocuments({ sourceId: certificate.id, type: 'certificate.issued' })).toBe(0);
-    await NotificationService.consumeOutboxEvent(eventId);
+    await consumeNotificationIntent(eventId);
     expect(await NotificationModel.countDocuments({ sourceId: certificate.id, type: 'certificate.issued' })).toBe(1);
     expect(await CertificateModel.countDocuments({ enrollmentId })).toBe(1);
-    const domain:any=await AutomationEventModel.findOne({eventId:`domain:${eventId}`});await AutomationEventModel.updateMany({_id:{$ne:domain._id},status:'PENDING'},{$set:{status:'PROCESSED'}}).setOptions({bypassTenantFilter:true});await AutomationService.processNextEvent();const execution:any=await AutomationExecutionModel.findOne({triggerEventId:domain.eventId,automationId:automation._id});expect(execution.status).toBe('COMPLETED');expect(await AutomationStepExecutionModel.countDocuments({executionId:execution._id,status:'COMPLETED'})).toBe(1);expect(await NotificationIntentModel.countDocuments({eventId:`${execution._id}:notify`})).toBe(1);await NotificationService.consumeOutboxEvent(eventId);await AutomationService.processNextEvent();expect(await CertificateModel.countDocuments({enrollmentId})).toBe(1);expect(await AutomationExecutionModel.countDocuments({triggerEventId:domain.eventId,automationId:automation._id})).toBe(1);expect(await NotificationIntentModel.countDocuments({eventId:`${execution._id}:notify`})).toBe(1);
+    const domain:any=await AutomationEventModel.findOne({eventId:`domain:${eventId}`});await runA(() => AutomationEventModel.updateMany({_id:{$ne:domain._id},status:'PENDING'},{$set:{status:'PROCESSED'}}));await AutomationService.processNextEvent();const execution:any=await AutomationExecutionModel.findOne({triggerEventId:domain.eventId,automationId:automation._id});expect(execution.status).toBe('COMPLETED');expect(await AutomationStepExecutionModel.countDocuments({executionId:execution._id,status:'COMPLETED'})).toBe(1);expect(await runA(() => NotificationIntentModel.countDocuments({eventId:`${execution._id}:notify`}))).toBe(1);await consumeNotificationIntent(eventId);await AutomationService.processNextEvent();expect(await CertificateModel.countDocuments({enrollmentId})).toBe(1);expect(await AutomationExecutionModel.countDocuments({triggerEventId:domain.eventId,automationId:automation._id})).toBe(1);expect(await runA(() => NotificationIntentModel.countDocuments({eventId:`${execution._id}:notify`}))).toBe(1);
   });
 
   it('11b. recovers revocation notification after post-commit crash with stable credential identity', async () => {
@@ -554,17 +555,17 @@ suite('Phase 13 Certificates & Credential Verification MongoDB Integration Suite
     expect(revoked.status).toBe('REVOKED'); expect(revoked.id).toBe(issued.id); expect(revoked.certificateNumber).toBe(issued.certificateNumber); expect(revoked.verificationCode).toBe(issued.verificationCode); expect(revoked.revocationReason).toBe('Controlled revocation recovery proof');
     expect(await CertificateModel.countDocuments({ enrollmentId })).toBe(1); expect(await CertificateService.verify(issued.verificationCode)).toMatchObject({ valid: false, status: 'REVOKED', certificateNumber: issued.certificateNumber });
     const eventId = `certificate.revoked:${issued.id}`;
-    expect((await NotificationIntentModel.findOne({ eventId }))?.status).toBe('PENDING');
+    expect((await runA(() => NotificationIntentModel.findOne({ eventId })))?.status).toBe('PENDING');
     expect(await NotificationModel.countDocuments({ sourceId: issued.id, type: 'certificate.revoked' })).toBe(0);
-    await NotificationService.consumeOutboxEvent(eventId);
+    await consumeNotificationIntent(eventId);
     const notification = await NotificationModel.findOne({ sourceId: issued.id, type: 'certificate.revoked' }); const delivery = await NotificationDeliveryModel.findOne({ notificationId: notification!._id });
-    await OrganizationEmailSettingsModel.deleteMany({ tenantId: tenantAId }).setOptions({ bypassTenantFilter: true });
+    await runA(() => OrganizationEmailSettingsModel.deleteMany({ tenantId: tenantAId }));
     await OrganizationEmailSettingsModel.create({ tenantId: tenantAId, provider: 'SMTP', status: 'VERIFIED', fromName: 'Alpha', fromEmail: 'certificates@alpha.test' });
     const sendEmail = vi.fn().mockResolvedValue({ success: true, messageId: 'revocation-message-1' }); const provider = vi.spyOn(EmailService, 'createProvider').mockReturnValue({ sendEmail, verifyConnection: vi.fn(), getProviderName: () => 'DOUBLE' });
-    try { await Promise.all(Array.from({ length: 10 }, () => NotificationService.processDelivery(delivery!._id.toString()))); } finally { provider.mockRestore(); }
-    await NotificationService.consumeOutboxEvent(eventId); await Promise.all(Array.from({ length: 3 }, () => NotificationService.processDelivery(delivery!._id.toString())));
+    try { await Promise.all(Array.from({ length: 10 }, () => processNotificationDelivery(delivery!._id.toString()))); } finally { provider.mockRestore(); }
+    await consumeNotificationIntent(eventId); await Promise.all(Array.from({ length: 3 }, () => processNotificationDelivery(delivery!._id.toString())));
     const recovered = await CertificateModel.findById(issued.id); const savedDelivery = await NotificationDeliveryModel.findById(delivery!._id);
-    expect((await NotificationIntentModel.findOne({ eventId }))?.status).toBe('PROCESSED'); expect(await NotificationModel.countDocuments({ sourceId: issued.id, type: 'certificate.revoked' })).toBe(1); expect(await NotificationDeliveryModel.countDocuments({ notificationId: notification!._id })).toBe(1);
+    expect((await runA(() => NotificationIntentModel.findOne({ eventId })))?.status).toBe('PROCESSED'); expect(await NotificationModel.countDocuments({ sourceId: issued.id, type: 'certificate.revoked' })).toBe(1); expect(await NotificationDeliveryModel.countDocuments({ notificationId: notification!._id })).toBe(1);
     expect(recovered?.status).toBe('REVOKED'); expect(recovered?.certificateNumber).toBe(issued.certificateNumber); expect(recovered?.verificationCode).toBe(issued.verificationCode); expect(recovered?.revocationReason).toBe('Controlled revocation recovery proof'); expect(savedDelivery?.status).toBe('DELIVERED'); expect(sendEmail).toHaveBeenCalledTimes(1);
   });
 
@@ -607,5 +608,20 @@ suite('Phase 13 Certificates & Credential Verification MongoDB Integration Suite
     expect((publicResult as any).tenantId).toBeUndefined();
     expect((publicResult as any).studentId).toBeUndefined();
     expect((publicResult as any).storageKey).toBeUndefined();
+  });
+
+  // 15. Trusted Artifact Handoff
+  it('15. trustedGenerate enforces SYSTEM capability, tenant validation, and rejects cross-tenant generation', async () => {
+    const cert = await runA(() => CertificateService.issue({ enrollmentId: enrollmentAId.toString() }, adminA));
+    const { authorizeInternalSystemCaller } = await import('@edtech/database');
+    process.env.INTERNAL_WORKER_SECRET ||= 'wave07-certificate-test-secret';
+    const authority = authorizeInternalSystemCaller(process.env.INTERNAL_WORKER_SECRET, 'certificate-test-worker')!;
+
+    await expect(CertificateService.trustedGenerate(cert.id, { principal: 'forged' } as any)).rejects.toThrow('Trusted internal system authority is required');
+    await expect(CertificateService.trustedGenerate(cert.id, authority, tenantBId.toString())).rejects.toThrow('Certificate tenant binding rejected');
+    await expect(CertificateService.trustedGenerate(cert.id)).rejects.toThrow('Tenant context or authorized system capability required');
+
+    const generated = await CertificateService.trustedGenerate(cert.id, authority, tenantAId.toString());
+    expect(generated.artifact.status).toBe('READY');
   });
 });

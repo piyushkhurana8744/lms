@@ -1,6 +1,9 @@
 import dotenv from 'dotenv';
+import path from 'path';
 import { z } from 'zod';
 
+// Keep the worker on the same repository-level infrastructure as the API.
+dotenv.config({ path: path.resolve(process.cwd(), '../../.env') });
 dotenv.config();
 
 const envSchema = z.object({

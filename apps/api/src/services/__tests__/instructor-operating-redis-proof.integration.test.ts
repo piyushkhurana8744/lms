@@ -1,4 +1,5 @@
 import { Queue } from '../../../../worker/node_modules/bullmq';
+import { consumeNotificationIntent, processNotificationDelivery } from './notification-system-test-helper';
 import Redis from 'ioredis';
 import mongoose from 'mongoose';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -44,22 +45,22 @@ suite(`Phase 17 real Redis ${mode?.toLowerCase()} proof`, () => {
       await queue.close().catch(() => undefined);
       connection.disconnect();
 
-      const prior = await TenantModel.findOne({ slug: marker }).setOptions({ bypassTenantFilter: true });
+      const prior = await TenantModel.collection.findOne({ slug: marker });
       if (prior) {
         await Promise.all([
-          NotificationDeliveryModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          NotificationModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          NotificationIntentModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          AuditLogModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          AssessmentSubmissionModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          AssessmentModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          EnrollmentModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          BatchModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          CourseModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          OrganizationMemberModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true }),
-          UserModel.deleteMany({ tenantId: prior._id }).setOptions({ bypassTenantFilter: true })
+          NotificationDeliveryModel.collection.deleteMany({ tenantId: prior._id }),
+          NotificationModel.collection.deleteMany({ tenantId: prior._id }),
+          NotificationIntentModel.collection.deleteMany({ tenantId: prior._id }),
+          AuditLogModel.collection.deleteMany({ tenantId: prior._id }),
+          AssessmentSubmissionModel.collection.deleteMany({ tenantId: prior._id }),
+          AssessmentModel.collection.deleteMany({ tenantId: prior._id }),
+          EnrollmentModel.collection.deleteMany({ tenantId: prior._id }),
+          BatchModel.collection.deleteMany({ tenantId: prior._id }),
+          CourseModel.collection.deleteMany({ tenantId: prior._id }),
+          OrganizationMemberModel.collection.deleteMany({ tenantId: prior._id }),
+          UserModel.collection.deleteMany({ tenantId: prior._id })
         ]);
-        await TenantModel.deleteOne({ _id: prior._id }).setOptions({ bypassTenantFilter: true });
+        await TenantModel.collection.deleteOne({ _id: prior._id });
       }
 
       const tenant = await TenantModel.create({ name: 'Phase 17 Redis Proof', slug: marker });
@@ -78,54 +79,57 @@ suite(`Phase 17 real Redis ${mode?.toLowerCase()} proof`, () => {
         { tenantId, userId: instructorId, role: 'INSTRUCTOR', status: 'ACTIVE', joinedAt: new Date() },
         { tenantId, userId: studentId, role: 'STUDENT', status: 'ACTIVE', joinedAt: new Date() }
       ]);
-      await CourseModel.create({ _id: courseId, tenantId, title: 'Proof Course', slug: marker, status: 'PUBLISHED' });
-      await BatchModel.create({
-        _id: batchId,
-        tenantId,
-        courseId,
-        instructorId,
-        name: 'Proof Batch',
-        batchCode: 'P17-REDIS',
-        mode: 'ONLINE',
-        status: 'ONGOING',
-        startDate: new Date(),
-        maxSeats: 30,
-        enrolledCount: 1,
-        timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
-        daysOfWeek: ['MONDAY'],
-        showOnWebsite: false
-      });
-      await EnrollmentModel.create({ tenantId, studentId, courseId, status: 'ACTIVE', enrolledAt: new Date(), progressPercent: 0 });
-      await AssessmentModel.create({
-        _id: assessmentId,
-        tenantId,
-        type: 'ASSIGNMENT',
-        scope: 'BATCH_LINKED',
-        batchId,
-        courseId,
-        title: 'Redis Outage Assignment',
-        slug: 'redis-outage-assignment',
-        description: 'Testing durable grading intent during Redis outage',
-        status: 'PUBLISHED',
-        showOnWebsite: false,
-        assignmentDetails: { maxScore: 100 },
-        createdBy: instructorId
-      });
+      let submission: any;
+      await tenantContextStorage.run({ currentTenantId: tenantId.toString(), currentUserId: instructorId.toString() }, async () => {
+        await CourseModel.create({ _id: courseId, tenantId, title: 'Proof Course', slug: marker, status: 'PUBLISHED' });
+        await BatchModel.create({
+          _id: batchId,
+          tenantId,
+          courseId,
+          instructorId,
+          name: 'Proof Batch',
+          batchCode: 'P17-REDIS',
+          mode: 'ONLINE',
+          status: 'ONGOING',
+          startDate: new Date(),
+          maxSeats: 30,
+          enrolledCount: 1,
+          timing: { startTime: '10:00', endTime: '11:00', timezone: 'Asia/Kolkata' },
+          daysOfWeek: ['MONDAY'],
+          showOnWebsite: false
+        });
+        await EnrollmentModel.create({ tenantId, studentId, courseId, status: 'ACTIVE', enrolledAt: new Date(), progressPercent: 0 });
+        await AssessmentModel.create({
+          _id: assessmentId,
+          tenantId,
+          type: 'ASSIGNMENT',
+          scope: 'BATCH_LINKED',
+          batchId,
+          courseId,
+          title: 'Redis Outage Assignment',
+          slug: 'redis-outage-assignment',
+          description: 'Testing durable grading intent during Redis outage',
+          status: 'PUBLISHED',
+          showOnWebsite: false,
+          assignmentDetails: { maxScore: 100 },
+          createdBy: instructorId
+        });
 
-      const submission = await AssessmentSubmissionModel.create({
-        tenantId,
-        assessmentId,
-        userId: studentId,
-        batchId,
-        courseId,
-        type: 'ASSIGNMENT',
-        attemptNumber: 1,
-        score: 0,
-        maxScore: 100,
-        scorePercentage: 0,
-        status: 'SUBMITTED',
-        revision: 0,
-        gradingHistory: []
+        submission = await AssessmentSubmissionModel.create({
+          tenantId,
+          assessmentId,
+          userId: studentId,
+          batchId,
+          courseId,
+          type: 'ASSIGNMENT',
+          attemptNumber: 1,
+          score: 0,
+          maxScore: 100,
+          scorePercentage: 0,
+          status: 'SUBMITTED',
+          revision: 0,
+          gradingHistory: []
+        });
       });
 
       setNotificationHandoffFailure(true);
@@ -142,26 +146,26 @@ suite(`Phase 17 real Redis ${mode?.toLowerCase()} proof`, () => {
       });
       setNotificationHandoffFailure(false);
 
-      const updatedSub = await AssessmentSubmissionModel.findById(submission._id).setOptions({ bypassTenantFilter: true });
+      const updatedSub = await AssessmentSubmissionModel.collection.findOne({ _id: submission._id });
       expect(updatedSub?.score).toBe(88);
       expect(updatedSub?.revision).toBe(1);
       expect(updatedSub?.status).toBe('GRADED');
       expect(updatedSub?.gradingHistory).toHaveLength(1);
-      expect(await AuditLogModel.countDocuments({ tenantId: tenantId.toString(), resourceId: submission._id.toString() }).setOptions({ bypassTenantFilter: true })).toBe(1);
+      expect(await AuditLogModel.collection.countDocuments({ tenantId: tenantId.toString(), resourceId: submission._id.toString() })).toBe(1);
 
-      const intent = await NotificationIntentModel.findOne({ tenantId, sourceId: submission._id.toString(), type: 'assessment.graded' }).setOptions({ bypassTenantFilter: true });
+      const intent = await NotificationIntentModel.collection.findOne({ tenantId, sourceId: submission._id.toString(), type: 'assessment.graded' });
       expect(intent).not.toBeNull();
       expect(intent?.status).toBe('PENDING');
 
-      expect(await NotificationModel.countDocuments({ tenantId }).setOptions({ bypassTenantFilter: true })).toBe(0);
-      expect(await NotificationDeliveryModel.countDocuments({ tenantId }).setOptions({ bypassTenantFilter: true })).toBe(0);
+      expect(await NotificationModel.collection.countDocuments({ tenantId })).toBe(0);
+      expect(await NotificationDeliveryModel.collection.countDocuments({ tenantId })).toBe(0);
       return;
     }
 
     // RECOVERY
-    const tenant = await TenantModel.findOne({ slug: marker }).setOptions({ bypassTenantFilter: true });
+    const tenant = await TenantModel.collection.findOne({ slug: marker });
     expect(tenant).not.toBeNull();
-    const submission = await AssessmentSubmissionModel.findOne({ tenantId: tenant!._id }).setOptions({ bypassTenantFilter: true });
+    const submission = await AssessmentSubmissionModel.collection.findOne({ tenantId: tenant!._id });
     expect(submission).not.toBeNull();
 
     const before = {
@@ -173,11 +177,11 @@ suite(`Phase 17 real Redis ${mode?.toLowerCase()} proof`, () => {
       historyCount: submission!.gradingHistory.length
     };
 
-    const intent = await NotificationIntentModel.findOne({ tenantId: tenant!._id, type: 'assessment.graded' }).setOptions({ bypassTenantFilter: true });
+    const intent = await NotificationIntentModel.collection.findOne({ tenantId: tenant!._id, type: 'assessment.graded' });
     expect(intent).not.toBeNull();
     expect(intent?.status).toBe('PENDING');
 
-    await OrganizationEmailSettingsModel.deleteMany({ tenantId: tenant!._id }).setOptions({ bypassTenantFilter: true });
+    await OrganizationEmailSettingsModel.collection.deleteMany({ tenantId: tenant!._id });
     await OrganizationEmailSettingsModel.create({
       tenantId: tenant!._id,
       provider: 'SMTP',
@@ -201,28 +205,28 @@ suite(`Phase 17 real Redis ${mode?.toLowerCase()} proof`, () => {
     await queue.waitUntilReady();
 
     // Consume intent
-    await NotificationService.consumeOutboxEvent(intent!.eventId);
-    const delivery = await NotificationDeliveryModel.findOne({ tenantId: tenant!._id }).setOptions({ bypassTenantFilter: true });
+    await consumeNotificationIntent(intent!.eventId);
+    const delivery = await NotificationDeliveryModel.collection.findOne({ tenantId: tenant!._id });
     expect(delivery).not.toBeNull();
 
     const publish = () => queue.add('notification.email', { deliveryId: delivery!._id.toString() }, { jobId: `notification_${delivery!._id}`, attempts: 5, backoff: { type: 'exponential', delay: 5_000 }, removeOnComplete: 1000 });
     await publish();
     expect(await queue.getJob(`notification_${delivery!._id}`)).not.toBeNull();
 
-    await NotificationService.processDelivery(delivery!._id.toString());
+    await processNotificationDelivery(delivery!._id.toString());
 
     // Second recovery sweep replay
-    await NotificationService.consumeOutboxEvent(intent!.eventId);
+    await consumeNotificationIntent(intent!.eventId);
     await publish();
-    await NotificationService.processDelivery(delivery!._id.toString());
+    await processNotificationDelivery(delivery!._id.toString());
 
     expect(sendEmail).toHaveBeenCalledTimes(1);
-    expect(await NotificationModel.countDocuments({ tenantId: tenant!._id, sourceId: submission!._id.toString(), type: 'assessment.graded' }).setOptions({ bypassTenantFilter: true })).toBe(1);
-    expect(await NotificationDeliveryModel.countDocuments({ tenantId: tenant!._id }).setOptions({ bypassTenantFilter: true })).toBe(1);
-    expect((await NotificationDeliveryModel.findById(delivery!._id).setOptions({ bypassTenantFilter: true }))?.status).toBe('DELIVERED');
+    expect(await NotificationModel.collection.countDocuments({ tenantId: tenant!._id, sourceId: submission!._id.toString(), type: 'assessment.graded' })).toBe(1);
+    expect(await NotificationDeliveryModel.collection.countDocuments({ tenantId: tenant!._id })).toBe(1);
+    expect((await NotificationDeliveryModel.collection.findOne({ _id: delivery!._id }))?.status).toBe('DELIVERED');
 
     // Prove ZERO grade mutation during recovery
-    const after = await AssessmentSubmissionModel.findById(submission!._id).setOptions({ bypassTenantFilter: true });
+    const after = await AssessmentSubmissionModel.collection.findOne({ _id: submission!._id });
     expect({
       id: after!._id.toString(),
       score: after!.score,

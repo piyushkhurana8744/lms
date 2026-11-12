@@ -37,7 +37,7 @@ const UserSchema = new Schema<IUserDocument>(
 );
 
 // Compound Index: Enforces tenant-scoped email uniqueness for standard tenant users
-UserSchema.index({ tenantId: 1, email: 1 }, { unique: true, partialFilterExpression: { tenantId: { $ne: null } } });
+UserSchema.index({ tenantId: 1, email: 1 }, { unique: true, partialFilterExpression: { tenantId: { $type: 'objectId' } } });
 
 // Index for Platform Super Admin lookups
 UserSchema.index({ isSuperAdmin: 1, email: 1 });

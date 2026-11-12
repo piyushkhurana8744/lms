@@ -317,6 +317,13 @@ export const ADMIN_NAVIGATION_CONFIG: NavigationItem[] = [
     permissionMode: 'ANY'
   },
   {
+    name: 'Class Recordings',
+    href: '/admin/recordings',
+    icon: Video,
+    requiredPermissions: [PERMISSIONS.CLASS_VIEW, PERMISSIONS.COURSE_VIEW, PERMISSIONS.SUPERADMIN_ALL],
+    permissionMode: 'ANY'
+  },
+  {
     name: 'Attendance',
     href: '/admin/attendance',
     icon: ClipboardCheck,
@@ -505,6 +512,13 @@ export const INSTRUCTOR_NAVIGATION_CONFIG: NavigationItem[] = [
     href: '/instructor/classes',
     icon: Calendar,
     requiredPermissions: [PERMISSIONS.CLASS_VIEW, PERMISSIONS.CLASS_UPDATE],
+    permissionMode: 'ANY'
+  },
+  {
+    name: 'My Recordings',
+    href: '/instructor/recordings',
+    icon: Video,
+    requiredPermissions: [PERMISSIONS.CLASS_VIEW, PERMISSIONS.COURSE_VIEW],
     permissionMode: 'ANY'
   },
   {

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { ClientSession, Types } from 'mongoose';
-import { CertificateModel, CertificateSequenceModel, CourseModel, EnrollmentModel, NotificationIntentModel, OrganizationBrandingModel, TenantModel, UserModel, runInTransaction } from '@edtech/database';
-import { getWorkspaceContext, logger, tenantContextStorage } from '@edtech/utils';
+import { CertificateModel, CertificateSequenceModel, CourseModel, EnrollmentModel, NotificationIntentModel, OrganizationBrandingModel, TenantModel, UserModel, runInTransaction, runAuthorizedSystemOperation, SystemAuthority } from '@edtech/database';
+import { getWorkspaceContext, logger, tenantContextStorage, tryGetWorkspaceContext } from '@edtech/utils';
 import { CertificateIssueSchema, CertificateListQuerySchema, CertificateRevokeSchema, CertificateVerificationCodeSchema } from '@edtech/validation';
 import { BadRequestError, ConflictError, NotFoundError } from '../errors/appError';
 import { AuditService } from './audit.service';
@@ -65,6 +65,38 @@ export class CertificateService {
   static async getForDownload(id: string, studentId?: string) { const query: any = { _id: id, tenantId: this.tenant() }; if (studentId) { query.studentId = studentId; query.status = 'ISSUED'; } const certificate = await CertificateModel.findOne(query); if (!certificate) throw new NotFoundError('Certificate not found'); return certificate; }
   static async revoke(id: string, raw: unknown, actor: Actor) { const tenantId = this.tenant(), payload = CertificateRevokeSchema.parse(raw); const certificate = await runInTransaction(async (session) => { const updated = await CertificateModel.findOneAndUpdate({ _id: id, tenantId, status: 'ISSUED' }, { $set: { status: 'REVOKED', revokedAt: new Date(), revokedBy: actor.userId, revocationReason: payload.reason } }, { new: true, session }); if (updated) { await NotificationIntentModel.create([{ tenantId, eventId: `certificate.revoked:${updated._id}`, type: 'certificate.revoked', recipientUserId: updated.studentId, sourceType: 'Certificate', sourceId: updated._id.toString(), occurrenceKey: 'revoked', data: { certificateNumber: updated.certificateNumber }, status: 'PENDING', availableAt: new Date(), attemptCount: 0 }], { session }); await AuditService.logEvent({ actorId: actor.userId, tenantId, action: 'CERTIFICATE_REVOKED', resource: 'Certificate', resourceId: id, metadata: { reason: payload.reason }, session }); return updated; } const existing = await CertificateModel.findOne({ _id: id, tenantId }).session(session); if (!existing) throw new NotFoundError('Certificate not found'); return existing; }); await NotificationService.consumeOutboxEvent(`certificate.revoked:${certificate._id}`).catch((error) => logger.error('[Notification] Certificate revoked handoff failed', error)); return this.dto(certificate); }
   static async retry(id: string, actor: Actor) { const certificate = await CertificateModel.findOne({ _id: id, tenantId: this.tenant() }); if (!certificate) throw new NotFoundError('Certificate not found'); if (certificate.artifact?.status === 'PROCESSING') throw new ConflictError('Certificate artifact is processing'); await CertificateModel.updateOne({ _id: certificate._id }, { $set: { 'artifact.status': 'PENDING' }, $inc: { 'artifact.retryCount': 1 }, $unset: { 'artifact.lastError': 1, 'artifact.leaseUntil': 1 } }); await AuditService.logEvent({ actorId: actor.userId, tenantId: this.tenant(), action: 'CERTIFICATE_ARTIFACT_RETRY', resource: 'Certificate', resourceId: id }); return this.dto(await CertificateArtifactService.generate(id)); }
-  static async verify(code: string) { CertificateVerificationCodeSchema.parse(code); const certificate = await CertificateModel.findOne({ verificationCode: code }).setOptions({ bypassTenantFilter: true }).lean(); if (!certificate) throw new NotFoundError('Credential not found'); const snapshot = certificate.credentialSnapshot; return { valid: certificate.status === 'ISSUED', status: certificate.status, certificateNumber: certificate.certificateNumber, studentName: snapshot.studentName, courseTitle: snapshot.courseTitle, organizationName: snapshot.organizationName, issuedAt: certificate.issuedAt, completionDate: snapshot.completionDate }; }
-  static async trustedGenerate(id: string) { const certificate = await CertificateModel.findById(id).setOptions({ bypassTenantFilter: true }).select('tenantId'); if (!certificate) throw new NotFoundError('Certificate not found'); const tenantId = certificate.tenantId.toString(); return tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: 'certificate-worker', isPlatformContext: false, allowedTenantIds: [tenantId] }, () => CertificateArtifactService.generate(id)); }
+  static async verify(code: string) {
+    const parsed = CertificateVerificationCodeSchema.parse(code);
+    const normalizedCode = String(parsed || code).trim();
+    const certificate: any = await CertificateModel.findOne({ verificationCode: normalizedCode })
+      .setOptions({ publicReadPolicy: 'CERTIFICATE_VERIFICATION' })
+      .select('verificationCode status certificateNumber credentialSnapshot.studentName credentialSnapshot.courseTitle credentialSnapshot.organizationName issuedAt credentialSnapshot.completionDate')
+      .lean();
+    if (!certificate) throw new NotFoundError('Credential not found');
+    const snapshot = certificate.credentialSnapshot || {};
+    return {
+      valid: certificate.status === 'ISSUED',
+      status: certificate.status,
+      certificateNumber: certificate.certificateNumber,
+      studentName: snapshot.studentName,
+      courseTitle: snapshot.courseTitle,
+      organizationName: snapshot.organizationName,
+      issuedAt: certificate.issuedAt,
+      completionDate: snapshot.completionDate
+    };
+  }
+  static async trustedGenerate(id: string, authority?: SystemAuthority, expectedTenantId?: string) {
+    if (!authority) {
+      const workspaceTenant = tryGetWorkspaceContext()?.currentTenantId;
+      if (!workspaceTenant) throw new Error('Tenant context or authorized system capability required');
+      return CertificateArtifactService.generate(id);
+    }
+    const binding = await runAuthorizedSystemOperation(authority, { kind: 'ARTIFACT_HANDOFF', reason: 'Resolve certificate artifact tenant', correlationId: id }, () =>
+      CertificateModel.findById(id).setOptions({ authorizedSystemOperation: 'ARTIFACT_HANDOFF' }).select('_id tenantId').lean()
+    );
+    if (!binding?.tenantId) throw new NotFoundError('Certificate not found');
+    const tenantId = binding.tenantId.toString();
+    if (expectedTenantId && expectedTenantId !== tenantId) throw new Error('Certificate tenant binding rejected');
+    return tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: authority.principal, isPlatformContext: false, allowedTenantIds: [tenantId] }, () => CertificateArtifactService.generate(id));
+  }
 }

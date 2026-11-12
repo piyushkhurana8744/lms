@@ -33,6 +33,7 @@ import {
   ConflictError
 } from '../../../errors/appError';
 import { BranchAccessService, BranchActor } from '../../branchAccess.service';
+import { tenantContextStorage } from '@edtech/utils';
 import { AuditService } from '../../audit.service';
 import { IntegrationProviderRegistry } from '../registry/providerRegistry.service';
 import { IntegrationOperationService } from './integrationOperation.service';
@@ -119,106 +120,110 @@ export class AcademicClassroomSyncService {
     rawInput: unknown,
     actor: BranchActor
   ): Promise<IExternalAcademicResourceDTO> {
-    const input = LinkClassroomCourseSchema.parse(rawInput);
+    return BranchAccessService.executeWithVerifiedTenantAuthority(tenantId, actor, async () => {
+      const input = LinkClassroomCourseSchema.parse(rawInput);
 
-    // 1. Fetch Batch
-    const batch = await BatchModel.findOne({ _id: input.batchId, tenantId });
-    if (!batch) {
-      throw new NotFoundError('Batch not found');
-    }
+      // 1. Fetch Batch
+      const batch = await BatchModel.findOne({ _id: input.batchId, tenantId });
+      if (!batch) {
+        throw new NotFoundError('Batch not found');
+      }
 
-    const branchId = batch.branchId?.toString();
-    if (branchId) {
-      await BranchAccessService.assertBranchAccess(tenantId, actor, branchId, {
-        requireActive: true
+      const branchId = batch.branchId?.toString();
+      if (branchId) {
+        await BranchAccessService.assertBranchAccess(tenantId, actor, branchId, {
+          requireActive: true
+        });
+      }
+
+      // 2. Fetch Connection
+      const connection = await IntegrationConnectionModel.findOne({
+        _id: input.connectionId,
+        tenantId,
+        provider: 'GOOGLE_CLASSROOM',
+        status: 'CONNECTED'
       });
-    }
 
-    // 2. Fetch Connection
-    const connection = await IntegrationConnectionModel.findOne({
-      _id: input.connectionId,
-      tenantId,
-      provider: 'GOOGLE_CLASSROOM',
-      status: 'CONNECTED'
-    });
+      if (!connection) {
+        throw new NotFoundError('Google Classroom connection not found');
+      }
 
-    if (!connection) {
-      throw new NotFoundError('Google Classroom connection not found');
-    }
-
-    // 3. Unique mapping check
-    const existingOther = await ExternalAcademicResourceModel.findOne({
-      tenantId,
-      provider: 'GOOGLE_CLASSROOM',
-      resourceType: 'BATCH',
-      externalResourceId: input.externalCourseId,
-      canonicalResourceId: { $ne: batch._id.toString() }
-    });
-
-    if (existingOther) {
-      throw new ConflictError(
-        'This Google Classroom course is already linked to another DIDM batch'
-      );
-    }
-
-    const mapping = await ExternalAcademicResourceModel.findOneAndUpdate(
-      {
+      // 3. Unique mapping check
+      const existingOther = await ExternalAcademicResourceModel.findOne({
         tenantId,
         provider: 'GOOGLE_CLASSROOM',
         resourceType: 'BATCH',
-        canonicalResourceId: batch._id.toString()
-      },
-      {
-        $set: {
-          connectionId: connection._id,
-          externalResourceId: input.externalCourseId,
-          branchId: batch.branchId,
-          syncDirection: input.syncDirection,
-          status: 'SYNCED',
-          lastSyncedAt: new Date(),
-          conflictData: null,
-          metadata: {
-            gradePolicy: input.gradePolicy,
-            batchName: batch.name,
-            courseId: batch.courseId?.toString()
+        externalResourceId: input.externalCourseId,
+        canonicalResourceId: { $ne: batch._id.toString() }
+      });
+
+      if (existingOther) {
+        throw new ConflictError(
+          'This Google Classroom course is already linked to another DIDM batch'
+        );
+      }
+
+      const mapping = await ExternalAcademicResourceModel.findOneAndUpdate(
+        {
+          tenantId,
+          provider: 'GOOGLE_CLASSROOM',
+          resourceType: 'BATCH',
+          canonicalResourceId: batch._id.toString()
+        },
+        {
+          $set: {
+            connectionId: connection._id,
+            externalResourceId: input.externalCourseId,
+            branchId: batch.branchId,
+            syncDirection: input.syncDirection,
+            status: 'SYNCED',
+            lastSyncedAt: new Date(),
+            conflictData: null,
+            metadata: {
+              gradePolicy: input.gradePolicy,
+              batchName: batch.name,
+              courseId: batch.courseId?.toString()
+            }
           }
-        }
-      },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
-    );
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
 
-    await AuditService.logEvent({
-      actorId: actor.userId,
-      tenantId,
-      action: 'GOOGLE_CLASSROOM_COURSE_LINKED',
-      resource: 'ExternalAcademicResource',
-      resourceId: mapping._id.toString(),
-      metadata: { batchId: batch._id.toString(), externalCourseId: input.externalCourseId }
+      await AuditService.logEvent({
+        actorId: actor.userId,
+        tenantId,
+        action: 'GOOGLE_CLASSROOM_COURSE_LINKED',
+        resource: 'ExternalAcademicResource',
+        resourceId: mapping._id.toString(),
+        metadata: { batchId: batch._id.toString(), externalCourseId: input.externalCourseId }
+      });
+
+      return this.toResourceDTO(mapping);
     });
-
-    return this.toResourceDTO(mapping);
   }
 
   public static async listLinks(
     tenantId: string,
     actor: BranchActor
   ): Promise<IExternalAcademicResourceDTO[]> {
-    const mappings = await ExternalAcademicResourceModel.find({
-      tenantId,
-      provider: 'GOOGLE_CLASSROOM',
-      resourceType: 'BATCH'
-    }).sort({ createdAt: -1 }).lean();
+    return BranchAccessService.executeWithVerifiedTenantAuthority(tenantId, actor, async () => {
+      const mappings = await ExternalAcademicResourceModel.find({
+        tenantId,
+        provider: 'GOOGLE_CLASSROOM',
+        resourceType: 'BATCH'
+      }).sort({ createdAt: -1 }).lean();
 
-    const authorized = [];
-    for (const m of mappings) {
-      if (m.branchId) {
-        const hasAccess = await BranchAccessService.hasBranchAccess(tenantId, actor, m.branchId.toString());
-        if (!hasAccess) continue;
+      const authorized = [];
+      for (const m of mappings) {
+        if (m.branchId) {
+          const hasAccess = await BranchAccessService.hasBranchAccess(tenantId, actor, m.branchId.toString());
+          if (!hasAccess) continue;
+        }
+        authorized.push(m);
       }
-      authorized.push(m);
-    }
 
-    return authorized.map((m: any) => this.toResourceDTO(m));
+      return authorized.map((m: any) => this.toResourceDTO(m));
+    });
   }
 
   /**
@@ -230,6 +235,17 @@ export class AcademicClassroomSyncService {
     rawOptions: unknown,
     actor: BranchActor
   ): Promise<IIntegrationSyncRunDTO> {
+    if (!tenantContextStorage.getStore()?.currentTenantId) {
+      return tenantContextStorage.run(
+        {
+          currentTenantId: tenantId,
+          currentUserId: actor.userId,
+          isPlatformContext: false,
+          allowedTenantIds: [tenantId]
+        },
+        async () => await this.syncClassroomResource(tenantId, linkId, rawOptions, actor)
+      );
+    }
     const options = SyncClassroomResourceSchema.parse(rawOptions || {});
 
     const link = await ExternalAcademicResourceModel.findOne({
@@ -449,38 +465,40 @@ export class AcademicClassroomSyncService {
     rawInput: unknown,
     actor: BranchActor
   ): Promise<IExternalAcademicResourceDTO> {
-    const input = ResolveClassroomConflictSchema.parse(rawInput);
-    const link = await ExternalAcademicResourceModel.findOne({
-      _id: linkId,
-      tenantId,
-      provider: 'GOOGLE_CLASSROOM'
-    });
-
-    if (!link) {
-      throw new NotFoundError('Classroom resource link not found');
-    }
-
-    if (link.branchId) {
-      await BranchAccessService.assertBranchAccess(tenantId, actor, link.branchId.toString(), {
-        requireActive: true
+    return BranchAccessService.executeWithVerifiedTenantAuthority(tenantId, actor, async () => {
+      const input = ResolveClassroomConflictSchema.parse(rawInput);
+      const link = await ExternalAcademicResourceModel.findOne({
+        _id: linkId,
+        tenantId,
+        provider: 'GOOGLE_CLASSROOM'
       });
-    }
 
-    link.status = 'SYNCED';
-    link.conflictData = undefined;
-    link.lastSyncedAt = new Date();
-    await link.save();
+      if (!link) {
+        throw new NotFoundError('Classroom resource link not found');
+      }
 
-    await AuditService.logEvent({
-      actorId: actor.userId,
-      tenantId,
-      action: 'CLASSROOM_CONFLICT_RESOLVED',
-      resource: 'ExternalAcademicResource',
-      resourceId: linkId,
-      metadata: { resolution: input.resolution }
+      if (link.branchId) {
+        await BranchAccessService.assertBranchAccess(tenantId, actor, link.branchId.toString(), {
+          requireActive: true
+        });
+      }
+
+      link.status = 'SYNCED';
+      link.conflictData = undefined;
+      link.lastSyncedAt = new Date();
+      await link.save();
+
+      await AuditService.logEvent({
+        actorId: actor.userId,
+        tenantId,
+        action: 'CLASSROOM_CONFLICT_RESOLVED',
+        resource: 'ExternalAcademicResource',
+        resourceId: linkId,
+        metadata: { resolution: input.resolution }
+      });
+
+      return this.toResourceDTO(link);
     });
-
-    return this.toResourceDTO(link);
   }
 
   public static async listSyncRuns(

@@ -189,6 +189,24 @@ describe('official provider adapter HTTP contracts', () => {
     expect(payload.settings.waiting_room).toBe(true);
   });
 
+  it('maps host entry controls to supported Zoom meeting settings', async () => {
+    const zoomResponse = { id: 124, uuid: 'uuid-controls', join_url: 'https://zoom.us/j/124', start_url: 'https://zoom.us/s/124', start_time: '2026-10-12T10:00:00Z', duration: 60, timezone: 'UTC', settings: {} };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(response(zoomResponse));
+    await new ZoomAdapter().createMeeting(connection('ZOOM'), {
+      tenantId: 't', classId: 'c', topic: 'Controlled class', startTime: new Date('2026-10-12T10:00:00Z'),
+      endTime: new Date('2026-10-12T11:00:00Z'), timezone: 'UTC', organizerUserId: 'u',
+      muteParticipantsOnEntry: true, participantVideoOnEntry: false, waitingRoom: true
+    });
+    const payload = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(payload.settings).toMatchObject({
+      join_before_host: false,
+      host_video: true,
+      participant_video: false,
+      mute_upon_entry: true,
+      waiting_room: true
+    });
+  });
+
   it('does not report Zoom recording READY without scope and verified host policy', async () => {
     const adapter = new ZoomAdapter();
     const missing = await adapter.getRecordingCapability(connection('ZOOM'));

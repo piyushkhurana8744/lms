@@ -28,7 +28,10 @@ import {
   PaymentMethod,
   DiscountType,
   InstallmentStatus,
-  LedgerEntryType
+  LedgerEntryType,
+  runAuthorizedSystemOperation,
+  SystemAuthority,
+  authorizeInternalSystemCaller
 } from '@edtech/database';
 import {
   tenantContextStorage,
@@ -239,22 +242,54 @@ export class FinanceService {
       return payment;
     });
   }
-  public static async processRazorpayWebhook(rawBody: Buffer, signature: string, providerEventId?: string) {
+  public static async processRazorpayWebhook(rawBody: Buffer, signature: string, providerEventId?: string, authority?: SystemAuthority) {
+    if (!signature) throw new ForbiddenError('Missing Razorpay webhook signature');
+    if (!Buffer.isBuffer(rawBody) || rawBody.length === 0 || rawBody.length > 1024 * 1024) throw new BadRequestError('Invalid webhook body');
+    if (signature.length > 256) throw new ForbiddenError('Invalid webhook signature');
     let event: any;
     try { event = JSON.parse(rawBody.toString('utf8')); } catch { throw new BadRequestError('Invalid webhook JSON'); }
     const eventId = String(providerEventId || event?.id || event?.event_id || crypto.createHash('sha256').update(rawBody).digest('hex'));
     const eventType = String(event?.event || '');
-    if (!eventId || !eventType) throw new BadRequestError('Webhook event identity is missing');
+    if (!/^[a-zA-Z0-9_\-.]{1,128}$/.test(eventId) || !/^[a-zA-Z0-9_.-]{1,64}$/.test(eventType)) throw new BadRequestError('Webhook event identity is missing or invalid');
 
     const entity = event?.payload?.payment?.entity;
     const refundEntity = event?.payload?.refund?.entity;
     const orderId = entity?.order_id;
     const providerRefundId = refundEntity?.id;
-    const payment = orderId
-      ? await PaymentModel.findOne({ gatewayProvider: 'RAZORPAY', gatewayOrderId: orderId }).setOptions({ bypassTenantFilter: true })
-      : providerRefundId
-        ? await RefundModel.findOne({ gatewayProvider: 'RAZORPAY', gatewayRefundId: providerRefundId }).setOptions({ bypassTenantFilter: true })
-        : null;
+
+    if (orderId && (typeof orderId !== 'string' || !/^[a-zA-Z0-9_\-.]{1,128}$/.test(orderId))) {
+      throw new BadRequestError('Invalid Razorpay order identifier format');
+    }
+    if (providerRefundId && (typeof providerRefundId !== 'string' || !/^[a-zA-Z0-9_\-.]{1,128}$/.test(providerRefundId))) {
+      throw new BadRequestError('Invalid Razorpay refund identifier format');
+    }
+    if (!orderId && !providerRefundId) {
+      throw new BadRequestError('Webhook payload does not contain an identifiable order or refund');
+    }
+
+    const auth = authority || authorizeInternalSystemCaller(process.env.INTERNAL_WORKER_SECRET, 'finance-webhook-pipeline');
+    if (!auth) throw new ForbiddenError('Trusted internal system authority is required');
+
+    const payment: any = await runAuthorizedSystemOperation(auth, {
+      kind: 'FINANCE_WEBHOOK',
+      reason: 'Resolve transaction tenant for Razorpay webhook',
+      correlationId: eventId
+    }, async () => {
+      if (orderId) {
+        return PaymentModel.findOne({ gatewayProvider: 'RAZORPAY', gatewayOrderId: orderId })
+          .setOptions({ authorizedSystemOperation: 'FINANCE_WEBHOOK' })
+          .select('_id tenantId')
+          .lean();
+      }
+      if (providerRefundId) {
+        return RefundModel.findOne({ gatewayProvider: 'RAZORPAY', gatewayRefundId: providerRefundId })
+          .setOptions({ authorizedSystemOperation: 'FINANCE_WEBHOOK' })
+          .select('_id tenantId')
+          .lean();
+      }
+      return null;
+    });
+
     if (!payment) throw new NotFoundError('Webhook does not reference a known internal transaction');
     const related: any = payment;
     const tenantId = related.tenantId.toString();
@@ -269,14 +304,20 @@ export class FinanceService {
         if (error?.code !== 11000) throw error;
         inbox = await PaymentWebhookEventModel.findOne({ provider: 'RAZORPAY', providerEventId: eventId });
         if (inbox?.status === 'PROCESSED') return { processed: true, duplicate: true };
+        if (inbox?.status === 'PROCESSING') return { processed: false, duplicate: true };
+        if (!inbox) throw error;
         inbox.status = 'PROCESSING'; inbox.attemptCount += 1; inbox.lastError = undefined; await inbox.save();
       }
       try {
         if (eventType === 'payment.captured') {
+          const paymentDoc: any = await PaymentModel.findOne({ _id: related._id, tenantId });
+          if (!paymentDoc) throw new NotFoundError('Payment not found');
           const details = await provider.fetchPayment(entity.id);
-          await this.finalizeSuccessfulPayment(related._id.toString(), details, related.studentUserId.toString());
+          await this.finalizeSuccessfulPayment(paymentDoc._id.toString(), details, paymentDoc.studentUserId.toString());
         } else if (eventType === 'refund.processed') {
-          await this.finalizeRefund(related._id.toString(), related.requestedBy.toString());
+          const refundDoc: any = await RefundModel.findOne({ _id: related._id, tenantId });
+          if (!refundDoc) throw new NotFoundError('Refund not found');
+          await this.finalizeRefund(refundDoc._id.toString(), refundDoc.requestedBy.toString());
         } else {
           throw new BadRequestError(`Unsupported webhook event: ${eventType}`);
         }
@@ -429,19 +470,24 @@ export class FinanceService {
   // 2. STUDENT FEE PLANS (CONTRACTUAL SNAPSHOTS)
   // ==========================================
 
-  public static async createStudentFeePlan(payload: CreateStudentFeePlanPayload, actorId: string, actor?: BranchActor): Promise<IStudentFeePlanDocument> {
+  public static async createStudentFeePlan(
+    payload: CreateStudentFeePlanPayload,
+    actorId: string,
+    actor?: BranchActor,
+    session?: ClientSession
+  ): Promise<IStudentFeePlanDocument> {
     const ctx = tenantContextStorage.getStore();
     if (!ctx?.currentTenantId) throw new Error('Tenant context required');
     const tenantId = ctx.currentTenantId;
 
-    const student = await UserModel.findOne({ _id: payload.studentUserId, tenantId });
+    const student = await UserModel.findOne({ _id: payload.studentUserId, tenantId }).session(session || null);
     if (!student) throw new NotFoundError('Student identity not found in this organization');
 
-    const course = await CourseModel.findOne({ _id: payload.courseId, tenantId });
+    const course = await CourseModel.findOne({ _id: payload.courseId, tenantId }).session(session || null);
     if (!course) throw new NotFoundError('Course not found');
 
     const feeStructure = payload.feeStructureId
-      ? await FeeStructureModel.findOne({ _id: payload.feeStructureId, tenantId, status: 'ACTIVE' }).lean()
+      ? await FeeStructureModel.findOne({ _id: payload.feeStructureId, tenantId, status: 'ACTIVE' }).session(session || null).lean()
       : null;
     if (payload.feeStructureId && !feeStructure) throw new NotFoundError('Active fee structure not found');
     if (feeStructure && feeStructure.courseId.toString() !== payload.courseId) {
@@ -515,7 +561,7 @@ export class FinanceService {
     }
 
     // 3. Create the contractual StudentFeePlan snapshot
-    const feePlan = await StudentFeePlanModel.create({
+    const [feePlan] = await StudentFeePlanModel.create([{
       tenantId,
       studentUserId: new Types.ObjectId(payload.studentUserId),
       admissionId: payload.admissionId ? new Types.ObjectId(payload.admissionId) : null,
@@ -552,10 +598,10 @@ export class FinanceService {
       notes: payload.notes?.trim(),
       createdBy: new Types.ObjectId(actorId),
       updatedBy: new Types.ObjectId(actorId)
-    });
+    }], { session: session || null });
 
     // 4. Initial Ledger Entry (CHARGE)
-    await FinancialLedgerModel.create({
+    await FinancialLedgerModel.create([{
       tenantId,
       studentUserId: feePlan.studentUserId,
       studentFeePlanId: feePlan._id,
@@ -567,11 +613,11 @@ export class FinanceService {
       isDebit: true,
       runningBalanceMinor: baseAmountMinor,
       actorId: new Types.ObjectId(actorId)
-    });
+    }], { session: session || null });
 
     // If discount was applied, write DISCOUNT entry to ledger
     if (discountAmountMinor > 0) {
-      await FinancialLedgerModel.create({
+      await FinancialLedgerModel.create([{
         tenantId,
         studentUserId: feePlan.studentUserId,
         studentFeePlanId: feePlan._id,
@@ -583,7 +629,7 @@ export class FinanceService {
         isDebit: false,
         runningBalanceMinor: netPayableMinor,
         actorId: new Types.ObjectId(actorId)
-      });
+      }], { session: session || null });
     }
 
     await AuditService.logEvent({
@@ -596,7 +642,8 @@ export class FinanceService {
         studentUserId: payload.studentUserId,
         netPayableMinor,
         discountAmountMinor
-      }
+      },
+      session
     });
 
     return feePlan;
@@ -780,14 +827,14 @@ export class FinanceService {
   public static async recordManualPayment(
     payload: RecordManualPaymentPayload,
     actorId: string,
-    actor?: BranchActor
+    actor?: BranchActor,
+    session?: ClientSession
   ): Promise<{ payment: IPaymentDocument; receipt: IReceiptDocument }> {
     const ctx = tenantContextStorage.getStore();
     if (!ctx?.currentTenantId) throw new Error('Tenant context required');
     const tenantId = ctx.currentTenantId;
 
-    try {
-      return await runInTransaction(async (session) => {
+    const executeOperation = async (session: ClientSession) => {
 
     if (payload.idempotencyKey) {
       const existing = await PaymentModel.findOne({ tenantId, idempotencyKey: payload.idempotencyKey }).session(session);
@@ -914,7 +961,13 @@ export class FinanceService {
     financeCheckpoint('MANUAL_AFTER_OUTBOX');
 
     return { payment, receipt };
-      });
+    };
+
+    try {
+      if (session) {
+        return await executeOperation(session);
+      }
+      return await runInTransaction(executeOperation);
     } catch (error: any) {
       if (error?.code !== 11000 || !payload.idempotencyKey) throw error;
       const existing = await PaymentModel.findOne({ tenantId, idempotencyKey: payload.idempotencyKey });

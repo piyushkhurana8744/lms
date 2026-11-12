@@ -94,6 +94,7 @@ export interface IUser {
   impersonatedBy?: string | null;
   isImpersonated?: boolean;
   impersonationReason?: string | null;
+  impersonationReturnTo?: string | null;
   roles: string[];
   permissions?: string[];
   lastLoginAt?: Date;
@@ -444,8 +445,8 @@ export interface IAuthContext {
   login: (data: any) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
-  impersonate: (userId: string, reason?: string) => Promise<void>;
-  exitImpersonation: () => Promise<void>;
+  impersonate: (userId: string, reason?: string, redirectTo?: string, returnTo?: string) => Promise<void>;
+  exitImpersonation: (redirectTo?: string) => Promise<void>;
   hasPermission: (permission: string) => boolean;
   hasAnyPermission?: (permissions: string[]) => boolean;
   hasAllPermissions?: (permissions: string[]) => boolean;
@@ -2022,6 +2023,17 @@ export interface CompleteFollowUpPayload {
   scheduleNextNote?: string;
 }
 
+export interface AdmissionFeeDetailsPayload {
+  baseAmount: number; // e.g. 45000 in INR
+  discountAmount?: number; // e.g. 5000
+  discountReason?: string;
+  paidAmount?: number; // Initial down payment / token amount, e.g. 10000
+  paymentMethod?: 'CASH' | 'UPI' | 'BANK_TRANSFER' | 'CARD' | 'CHEQUE' | 'ONLINE_GATEWAY' | 'OTHER';
+  transactionReference?: string; // UTR, Cheque No, Bank Ref
+  installmentsCount?: number; // 1, 2, 3, etc.
+  notes?: string;
+}
+
 export interface CreateAdmissionPayload {
   applicant?: {
     fullName?: string;
@@ -2042,11 +2054,13 @@ export interface CreateAdmissionPayload {
   batchId?: string;
   branchId?: string;
   assignedCounsellor?: string;
+  feeDetails?: AdmissionFeeDetailsPayload;
   notes?: string;
 }
 
 export interface ConvertAdmissionPayload {
   batchId?: string;
+  feeDetails?: AdmissionFeeDetailsPayload;
   sendWelcomeEmail?: boolean;
 }
 
@@ -3188,4 +3202,27 @@ export interface IAttendanceEvidenceDTO {
   resolutionStatus: 'RESOLVED' | 'UNRESOLVED' | 'CONFLICT';
   importedToAttendanceSession: boolean;
   createdAt: string | Date;
+}
+
+export type ZoomAccountMembershipStatus = 'ACTIVE' | 'INACTIVE' | 'PENDING';
+export type ZoomLicenseType = 'LICENSED' | 'BASIC' | 'ON_PREM';
+
+export interface ITrainerZoomAccountDTO {
+  id: string;
+  tenantId: string;
+  userId: string;
+  trainerName?: string;
+  trainerEmail?: string;
+  zoomAccountId: string;
+  zoomUserId: string;
+  zoomEmail: string;
+  accountMembershipStatus: ZoomAccountMembershipStatus;
+  licenseType: ZoomLicenseType;
+  isHostEligible: boolean;
+  ineligibilityReason?: string | null;
+  verifiedAt?: string | Date | null;
+  lastSyncedAt: string | Date;
+  metadata?: Record<string, any>;
+  createdAt?: string | Date;
+  updatedAt?: string | Date;
 }

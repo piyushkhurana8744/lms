@@ -54,7 +54,7 @@ import {
   disconnectDatabase
 } from '@edtech/database';
 import { PERMISSIONS, SYSTEM_ROLE_PERMISSIONS } from '@edtech/permissions';
-import { hashPassword } from '@edtech/utils';
+import { hashPassword, tenantContextStorage } from '@edtech/utils';
 import {
   DEMO_ORG,
   DEMO_BRANCHES,
@@ -111,8 +111,16 @@ async function seed() {
   const tenantId = tenant._id;
   console.log(`✓ Demo Tenant: "${tenant.name}" (${tenant._id})`);
 
-  // Organization Settings & Branding
-  await OrganizationSettingsModel.findOneAndUpdate(
+  await tenantContextStorage.run(
+    {
+      currentTenantId: tenantId.toString(),
+      currentUserId: 'demo-seed',
+      isPlatformContext: true,
+      allowedTenantIds: [tenantId.toString()]
+    },
+    async () => {
+      // Organization Settings & Branding
+      await OrganizationSettingsModel.findOneAndUpdate(
     { tenantId },
     {
       $set: {
@@ -197,9 +205,12 @@ async function seed() {
   const userMap = new Map<string, Types.ObjectId>();
 
   // A. SuperAdmin (Global Identity)
-  let superAdmin = await UserModel.findOne({ email: DEMO_USERS.superadmin.email });
-  if (!superAdmin) {
-    superAdmin = await UserModel.create({
+  let superAdminDoc = await UserModel.collection.findOne({ email: DEMO_USERS.superadmin.email });
+  let superAdminId: Types.ObjectId;
+  if (!superAdminDoc) {
+    superAdminId = new Types.ObjectId();
+    await UserModel.collection.insertOne({
+      _id: superAdminId,
       name: DEMO_USERS.superadmin.name,
       email: DEMO_USERS.superadmin.email,
       passwordHash: defaultPasswordHash,
@@ -210,14 +221,17 @@ async function seed() {
       allowedTenantIds: [tenantId]
     });
   } else {
-    superAdmin.isSuperAdmin = true;
-    superAdmin.passwordHash = defaultPasswordHash;
-    if (!superAdmin.allowedTenantIds?.includes(tenantId)) {
-      superAdmin.allowedTenantIds.push(tenantId);
+    superAdminId = superAdminDoc._id;
+    const allowed = (superAdminDoc.allowedTenantIds || []) as Types.ObjectId[];
+    if (!allowed.some((id: any) => String(id) === String(tenantId))) {
+      allowed.push(tenantId);
     }
-    await superAdmin.save();
+    await UserModel.collection.updateOne(
+      { _id: superAdminId },
+      { $set: { isSuperAdmin: true, passwordHash: defaultPasswordHash, allowedTenantIds: allowed } }
+    );
   }
-  userMap.set('superadmin', superAdmin._id);
+  userMap.set('superadmin', superAdminId);
 
   // Helper to upsert tenant user & organization membership
   async function upsertUser(
@@ -627,7 +641,7 @@ async function seed() {
     { tenantId, provider: 'ZOOM' },
     {
       $set: {
-        status: 'CONNECTED',
+        status: 'DEMO',
         scopeType: 'TENANT',
         externalAccountId: 'didm-zoom-dev@didm.edu',
         scopes: ['meeting:write:admin', 'meeting:read:admin'],
@@ -788,7 +802,7 @@ async function seed() {
           scheduledStart: start,
           scheduledEnd: end,
           timezone: DEMO_ORG.timezone,
-          syncStatus: 'SYNCED',
+          syncStatus: cData.provider === 'ZOOM' ? 'FAILED' : 'SYNCED',
           lastSyncedAt: new Date()
         }
       },
@@ -1778,13 +1792,10 @@ async function seed() {
   console.log('\n======================================================');
   console.log('🎉 SEED COMPLETED SUCCESSFULLY WITH ZERO DUPLICATES');
   console.log('======================================================');
-  console.log('QA Login & Impersonation Credentials:');
-  console.log('  Password for all accounts: DemoPass123!');
-  console.log('  SuperAdmin:       superadmin@didm.edu');
-  console.log('  Tenant Admin:     admin@didm.edu');
-  console.log('  Primary Student:  aman.verma@student.didm.edu');
-  console.log('  Primary Teacher:  aarav.sharma@didm.edu');
+  console.log('QA accounts seeded. Credentials are supplied through the test environment and are not printed.');
   console.log('======================================================\n');
+    }
+  );
 
   await disconnectDatabase();
 }

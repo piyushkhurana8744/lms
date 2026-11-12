@@ -48,6 +48,17 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
     isSuperAdmin: false
   };
 
+  const run = <T>(fn: () => Promise<T> | any): Promise<T> =>
+    tenantContextStorage.run(
+      {
+        currentTenantId: tenantId.toString(),
+        currentUserId: instructorId.toString(),
+        isPlatformContext: false,
+        allowedTenantIds: [tenantId.toString()]
+      },
+      async () => await fn()
+    );
+
   beforeAll(async () => {
     const mongoUri = process.env.MONGO_INTEGRATION_URI || 'mongodb://127.0.0.1:27017/edtech_lms_test';
     await connectDatabase(mongoUri);
@@ -55,82 +66,87 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
     await TenantModel.create({ _id: tenantId, name: 'Provider Matrix Tenant', slug: 'prov-matrix', status: 'ACTIVE' });
     await BranchModel.create({ _id: branchId, tenantId, name: 'Matrix Branch', code: 'MB-1', slug: 'branch-matrix', status: 'ACTIVE' });
 
-    await UserModel.create([
-      { _id: instructorId, tenantId, allowedTenantIds: [tenantId], email: 'instructor@matrix.edu', name: 'Matrix Instructor', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: student1Id, tenantId, allowedTenantIds: [tenantId], email: 'student1@matrix.edu', name: 'Alice Student', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: student2Id, tenantId, allowedTenantIds: [tenantId], email: 'student2@matrix.edu', name: 'Bob Student', passwordHash: 'hash123', status: 'ACTIVE' }
-    ]);
+    await tenantContextStorage.run(
+      { currentTenantId: tenantId.toString(), currentUser: { id: instructorId.toString(), tenantId: tenantId.toString(), roles: ['INSTRUCTOR'] } },
+      async () => {
+        await UserModel.create([
+          { _id: instructorId, tenantId, allowedTenantIds: [tenantId], email: 'instructor@matrix.edu', name: 'Matrix Instructor', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: student1Id, tenantId, allowedTenantIds: [tenantId], email: 'student1@matrix.edu', name: 'Alice Student', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: student2Id, tenantId, allowedTenantIds: [tenantId], email: 'student2@matrix.edu', name: 'Bob Student', passwordHash: 'hash123', status: 'ACTIVE' }
+        ]);
 
-    await OrganizationMemberModel.create([
-      { tenantId, userId: instructorId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' },
-      { tenantId, userId: student1Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' },
-      { tenantId, userId: student2Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' }
-    ]);
+        await OrganizationMemberModel.create([
+          { tenantId, userId: instructorId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' },
+          { tenantId, userId: student1Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' },
+          { tenantId, userId: student2Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchId], status: 'ACTIVE' }
+        ]);
 
-    await CourseModel.create({
-      _id: courseId,
-      tenantId,
-      title: 'Matrix Architecture Course',
-      slug: 'mat-101',
-      status: 'PUBLISHED'
-    });
+        await CourseModel.create({
+          _id: courseId,
+          tenantId,
+          title: 'Matrix Architecture Course',
+          slug: 'mat-101',
+          status: 'PUBLISHED'
+        });
 
-    await BatchModel.create({
-      _id: batchId,
-      tenantId,
-      branchId,
-      courseId,
-      name: 'Matrix Batch Alpha',
-      batchCode: 'MBA-1',
-      startDate: new Date(),
-      status: 'ONGOING',
-      instructorId,
-      timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
-      mode: 'ONLINE',
-      maxSeats: 30,
-      enrolledCount: 2,
-      daysOfWeek: ['MON'],
-      showOnWebsite: true
-    });
+        await BatchModel.create({
+          _id: batchId,
+          tenantId,
+          branchId,
+          courseId,
+          name: 'Matrix Batch Alpha',
+          batchCode: 'MBA-1',
+          startDate: new Date(),
+          status: 'ONGOING',
+          instructorId,
+          timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
+          mode: 'ONLINE',
+          maxSeats: 30,
+          enrolledCount: 2,
+          daysOfWeek: ['MON'],
+          showOnWebsite: true
+        });
 
-    await EnrollmentModel.create([
-      { tenantId, studentId: student1Id, courseId, batchId, status: 'ACTIVE' },
-      { tenantId, studentId: student2Id, courseId, batchId, status: 'ACTIVE' }
-    ]);
+        await EnrollmentModel.create([
+          { tenantId, studentId: student1Id, courseId, batchId, status: 'ACTIVE' },
+          { tenantId, studentId: student2Id, courseId, batchId, status: 'ACTIVE' }
+        ]);
 
-    IntegrationProviderRegistry.setTestMode(true);
+        IntegrationProviderRegistry.setTestMode(true);
 
-    const providers: IntegrationProvider[] = ['GOOGLE_MEET', 'ZOOM', 'MICROSOFT_TEAMS'];
-    for (const p of providers) {
-      const conn = await IntegrationConnectionModel.create({
-        tenantId,
-        provider: p,
-        status: 'CONNECTED',
-        encryptedCredentials: SecretEncryptionService.encryptSecret(
-          JSON.stringify({
-            refreshToken: `ref_${p}`,
-            accessToken: `acc_${p}`
-          })
-        ),
-        externalAccountId: `host@${p.toLowerCase()}.com`
-      });
-      connections[p] = conn._id.toString();
-    }
+        const providers: IntegrationProvider[] = ['GOOGLE_MEET', 'ZOOM', 'MICROSOFT_TEAMS'];
+        for (const p of providers) {
+          const conn = await IntegrationConnectionModel.create({
+            tenantId,
+            provider: p,
+            status: 'CONNECTED',
+            encryptedCredentials: SecretEncryptionService.encryptSecret(
+              JSON.stringify({
+                refreshToken: `ref_${p}`,
+                accessToken: `acc_${p}`
+              })
+            ),
+            externalAccountId: `host@${p.toLowerCase()}.com`
+          });
+          connections[p] = conn._id.toString();
+        }
+      }
+    );
   });
 
   afterAll(async () => {
-    await LiveMeetingAssociationHistoryModel.deleteMany({});
-    await AttendanceEvidenceModel.deleteMany({});
-    await ExternalMeetingModel.deleteMany({});
-    await IntegrationConnectionModel.deleteMany({});
-    await ClassModel.deleteMany({});
-    await EnrollmentModel.deleteMany({});
-    await BatchModel.deleteMany({});
-    await CourseModel.deleteMany({});
-    await OrganizationMemberModel.deleteMany({});
-    await UserModel.deleteMany({});
-    await BranchModel.deleteMany({});
-    await TenantModel.deleteMany({});
+    await LiveMeetingAssociationHistoryModel.collection.deleteMany({});
+    await AttendanceEvidenceModel.collection.deleteMany({});
+    await ExternalMeetingModel.collection.deleteMany({});
+    await IntegrationConnectionModel.collection.deleteMany({});
+    await ClassModel.collection.deleteMany({});
+    await EnrollmentModel.collection.deleteMany({});
+    await BatchModel.collection.deleteMany({});
+    await CourseModel.collection.deleteMany({});
+    await OrganizationMemberModel.collection.deleteMany({});
+    await UserModel.collection.deleteMany({});
+    await BranchModel.collection.deleteMany({});
+    await TenantModel.collection.deleteMany({});
     await disconnectDatabase();
   });
 
@@ -138,7 +154,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
 
   it('persists append-only Meet to Zoom to Teams association history and converges concurrent retries', async () => {
     const switchClassId = new mongoose.Types.ObjectId();
-    await ClassModel.create({
+    await run(() => ClassModel.create({
       _id: switchClassId, tenantId, branchId, batchId, courseId, instructorId,
       name: 'Provider Switch History', classCode: 'CLS-SWITCH-HISTORY',
       scheduledStartAt: new Date(Date.now() + 3600000), scheduledEndAt: new Date(Date.now() + 7200000),
@@ -146,7 +162,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
       status: 'SCHEDULED', scheduleRevision: 0, mode: 'ONLINE', capacity: 30,
       enrolledCount: 0, enrolledStudents: [],
       timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' }, daysOfWeek: [], showOnWebsite: false
-    });
+    }));
 
     for (const provider of providers) {
       await LiveClassOrchestratorService.createMeetingForClass(
@@ -174,9 +190,12 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
     }
     expect(history[0].retiredAt).toBeInstanceOf(Date);
     expect(history[1].retiredAt).toBeInstanceOf(Date);
-    expect(await LiveMeetingAssociationHistoryModel.countDocuments({
-      tenantId: new mongoose.Types.ObjectId(), classId: switchClassId
-    }).setOptions({ bypassTenantFilter: true })).toBe(0);
+    const foreignTenantId = new mongoose.Types.ObjectId();
+    const foreignCount = await tenantContextStorage.run(
+      { currentTenantId: foreignTenantId.toString() },
+      async () => await LiveMeetingAssociationHistoryModel.countDocuments({ classId: switchClassId })
+    );
+    expect(foreignCount).toBe(0);
     expect(await ExternalMeetingModel.countDocuments({ tenantId, classId: switchClassId })).toBe(1);
   });
 
@@ -186,7 +205,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
 
       it(`creates and synchronizes ${provider} meeting for canonical class`, async () => {
         classDocId = new mongoose.Types.ObjectId();
-        await ClassModel.create({
+        await run(() => ClassModel.create({
           _id: classDocId,
           tenantId,
           branchId,
@@ -208,7 +227,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
           timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
           daysOfWeek: [],
           showOnWebsite: false
-        });
+        }));
 
         const meeting = await LiveClassOrchestratorService.createMeetingForClass(
           tenantId.toString(),
@@ -224,13 +243,13 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
       });
 
       it(`reschedules ${provider} meeting safely when canonical class time updates`, async () => {
-        const cls = await ClassModel.findById(classDocId);
+        const cls = await run(() => ClassModel.findById(classDocId));
         expect(cls).toBeDefined();
 
         cls!.scheduledStartAt = new Date(Date.now() + 10800000);
         cls!.scheduledEndAt = new Date(Date.now() + 14400000);
         cls!.scheduleRevision += 1;
-        await cls!.save();
+        await run(() => cls!.save());
 
         const updatedMeeting = await LiveClassOrchestratorService.rescheduleMeetingForClass(
           tenantId.toString(),
@@ -265,7 +284,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
     matrixProviders.forEach((prov) => {
       it(`creates exactly 1 logical ExternalMeeting record for ${prov} under 10 concurrent requests`, async () => {
         const raceClassId = new mongoose.Types.ObjectId();
-        await ClassModel.create({
+        await run(() => ClassModel.create({
           _id: raceClassId,
           tenantId,
           branchId,
@@ -287,7 +306,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
           timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
           daysOfWeek: [],
           showOnWebsite: false
-        });
+        }));
 
         // 10 simultaneous create requests
         const promises = Array.from({ length: 10 }).map(() =>
@@ -322,7 +341,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
       const initialStart = new Date(Date.now() + 3600000);
       const initialEnd = new Date(Date.now() + 7200000);
 
-      await ClassModel.create({
+      await run(() => ClassModel.create({
         _id: raceClassId,
         tenantId,
         branchId,
@@ -344,7 +363,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
         timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
         daysOfWeek: [],
         showOnWebsite: false
-      });
+      }));
 
       await LiveClassOrchestratorService.createMeetingForClass(
         tenantId.toString(),
@@ -354,9 +373,9 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
       );
 
       // Race: Canonical cancel Class AND attempt to run reschedule concurrently
-      const cls = await ClassModel.findById(raceClassId);
+      const cls = await run(() => ClassModel.findById(raceClassId));
       cls!.status = 'CANCELLED';
-      await cls!.save();
+      await run(() => cls!.save());
 
       const [cancelResult, rescheduleResult] = await Promise.all([
         LiveClassOrchestratorService.cancelMeetingForClass(
@@ -395,7 +414,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
   describe('Participant & Attendance Evidence Resolution Matrix', () => {
     it('safely resolves mapped students, aggregates reconnects, isolates unknown participants, and does not mutate finalized attendance', async () => {
       const evidenceClassId = new mongoose.Types.ObjectId();
-      await ClassModel.create({
+      await run(() => ClassModel.create({
         _id: evidenceClassId,
         tenantId,
         branchId,
@@ -417,7 +436,7 @@ suite('Phase 22 Live Meeting Provider Matrix & Concurrency Test Suite', () => {
         timing: { startTime: '10:00', endTime: '12:00', timezone: 'UTC' },
         daysOfWeek: [],
         showOnWebsite: false
-      });
+      }));
 
       await ExternalMeetingModel.create({
         tenantId,

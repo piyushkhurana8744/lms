@@ -1,6 +1,6 @@
 import { Worker, Job, Queue } from 'bullmq';
 import { createRedisConnection } from './config/redis';
-import { connectDatabase, disconnectDatabase } from '@edtech/database';
+import { authorizeInternalSystemCaller, connectDatabase, disconnectDatabase, runAuthorizedSystemOperation } from '@edtech/database';
 import { ENV } from './config/env';
 import { logger } from '@edtech/utils';
 import { APP_CONFIG } from '@edtech/config';
@@ -24,6 +24,8 @@ let integrationTimer: ReturnType<typeof setInterval> | undefined;
 async function bootstrap() {
   try {
     await connectDatabase(ENV.MONGO_URI);
+    const systemAuthority = authorizeInternalSystemCaller(ENV.INTERNAL_WORKER_SECRET, 'queue-worker');
+    if (!systemAuthority) throw new Error('Worker could not establish trusted SYSTEM authority');
     const redis = createRedisConnection();
     const emailQueue = new Queue(APP_CONFIG.QUEUES.EMAIL, { connection: redis as any });
     const reconciliationQueue = new Queue(APP_CONFIG.QUEUES.FINANCE_RECONCILIATION, { connection: redis as any });
@@ -33,41 +35,47 @@ async function bootstrap() {
     await publishHeartbeat();
     heartbeatTimer = setInterval(() => void publishHeartbeat().catch((error) => logger.error('[Worker] Heartbeat failed', error)), 15_000);
 
-    const invokeInternal = async (kind: string, id: string) => {
-      const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/finance/${kind}/${encodeURIComponent(id)}`, { method: 'POST', headers: { 'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET } });
+    const invokeInternal = async (kind: string, id: string, tenantId?: string) => {
+      const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/finance/${kind}/${encodeURIComponent(id)}`, {
+        method: 'POST',
+        headers: {
+          'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET,
+          ...(tenantId ? { 'x-tenant-id': tenantId } : {})
+        }
+      });
       if (!response.ok) throw new Error(`Internal finance operation failed (${response.status})`);
     };
-    const consumeFinanceNotification = async (eventId: string, eventType: string) => {
+    const consumeFinanceNotification = async (eventId: string, eventType: string, tenantId: string) => {
       if (eventType !== 'payment.success') return;
-      const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/notifications/finance-events/${encodeURIComponent(eventId)}/consume`, { method: 'POST', headers: { 'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET } });
+      const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/notifications/finance-events/${encodeURIComponent(eventId)}/consume`, { method: 'POST', headers: { 'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET, 'x-tenant-id': tenantId } });
       if (!response.ok) throw new Error(`Finance notification consumption failed (${response.status})`);
     };
-    const dispatchOutbox = () => dispatchOutboxBatch(emailQueue, (receiptId) => invokeInternal('receipt-artifact', receiptId), ENV.FINANCE_RECONCILIATION_BATCH_SIZE, consumeFinanceNotification);
+    const dispatchOutbox = () => dispatchOutboxBatch(systemAuthority, emailQueue, (receiptId: string, tenantId?: string) => invokeInternal('receipt-artifact', receiptId, tenantId), ENV.FINANCE_RECONCILIATION_BATCH_SIZE, consumeFinanceNotification);
     await dispatchOutbox();
     outboxTimer = setInterval(() => void dispatchOutbox(), 10_000);
 
     const scheduleReconciliation = async () => {
-      const count = await enqueueReconciliationBatch(reconciliationQueue, { paymentStaleMinutes: ENV.PAYMENT_RECONCILIATION_STALE_MINUTES, refundStaleMinutes: ENV.REFUND_RECONCILIATION_STALE_MINUTES, batchSize: ENV.FINANCE_RECONCILIATION_BATCH_SIZE });
+      const count = await enqueueReconciliationBatch(systemAuthority, reconciliationQueue, { paymentStaleMinutes: ENV.PAYMENT_RECONCILIATION_STALE_MINUTES, refundStaleMinutes: ENV.REFUND_RECONCILIATION_STALE_MINUTES, batchSize: ENV.FINANCE_RECONCILIATION_BATCH_SIZE });
       await redis.set('finance:reconciliation:heartbeat', Date.now().toString(), 'EX', 90);
       return count;
     };
     await scheduleReconciliation();
     reconciliationTimer = setInterval(() => void scheduleReconciliation().catch((error) => logger.error('[Worker:Finance] Reconciliation scheduling failed', error)), ENV.FINANCE_RECONCILIATION_INTERVAL_MS);
-    const consumeIntent = async (eventId: string) => { const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/notifications/intents/${encodeURIComponent(eventId)}/consume`, { method: 'POST', headers: { 'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET } }); if (!response.ok) throw new Error(`Notification intent consumption failed (${response.status})`); };
-    const scheduleNotifications = async () => { await recoverNotificationIntents(consumeIntent); return enqueuePendingNotificationDeliveries(notificationQueue); };
+    const consumeIntent = async (eventId: string, tenantId: string) => { const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/notifications/intents/${encodeURIComponent(eventId)}/consume`, { method: 'POST', headers: { 'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET, 'x-tenant-id': tenantId } }); if (!response.ok) throw new Error(`Notification intent consumption failed (${response.status})`); };
+    const scheduleNotifications = async () => { await recoverNotificationIntents(systemAuthority, consumeIntent); return enqueuePendingNotificationDeliveries(systemAuthority, notificationQueue); };
     await scheduleNotifications();
     notificationTimer = setInterval(() => void scheduleNotifications().catch((error) => logger.error('[Worker:Notification] Scheduling failed', error)), 10_000);
     const scheduleAutomations = async () => { const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/automations/process`, { method: 'POST', headers: { 'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET } }); if (!response.ok) throw new Error(`Automation processing failed (${response.status})`); };
     await scheduleAutomations();
     automationTimer = setInterval(() => void scheduleAutomations().catch((error) => logger.error('[Worker:Automation] Recovery poll failed', error)), 5_000);
-    const scheduleIntegrations = async () => enqueuePendingIntegrationOperations(integrationQueue);
+    const scheduleIntegrations = async () => enqueuePendingIntegrationOperations(systemAuthority, integrationQueue);
     await scheduleIntegrations();
     integrationTimer = setInterval(() => void scheduleIntegrations().catch((error) => logger.error('[Worker:Integrations] Scheduling failed', error)), 5_000);
 
     const integrationWorker = new Worker(APP_CONFIG.QUEUES.INTEGRATIONS, async (job: Job) => {
       const operationId = String(job.data.operationId || '');
       const tenantId = String(job.data.tenantId || '');
-      const operation = await IntegrationOperationModel.findOne({ _id: operationId, tenantId }).setOptions({ bypassTenantFilter: true });
+      const operation = await runAuthorizedSystemOperation(systemAuthority, { kind: 'INTEGRATION_WORKER', tenantId, reason: 'Verify queued integration operation ownership', correlationId: String(job.id || operationId) }, () => IntegrationOperationModel.findOne({ _id: operationId, tenantId }).setOptions({ authorizedSystemOperation: 'INTEGRATION_WORKER' }));
       if (!operation) throw new Error('Integration operation tenant binding rejected');
       const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/integrations/operations/${encodeURIComponent(operationId)}/process`, {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET }
@@ -76,27 +84,29 @@ async function bootstrap() {
     }, { connection: redis as any, concurrency: 3 });
     integrationWorker.on('failed', async (job, error) => {
       if (job && job.attemptsMade >= (job.opts.attempts || 1)) {
-        await IntegrationOperationModel.updateOne({ _id: job.data.operationId, status: { $ne: 'COMPLETED' } }, {
+        const tenantId = String(job.data.tenantId || '');
+        await runAuthorizedSystemOperation(systemAuthority, { kind: 'INTEGRATION_WORKER', tenantId, reason: 'Finalize exhausted integration operation', correlationId: String(job.id || job.data.operationId) }, () => IntegrationOperationModel.updateOne({ _id: job.data.operationId, tenantId, status: { $ne: 'COMPLETED' } }, {
           $set: { status: 'FAILED', errorCategory: 'INTERNAL', errorDetails: String(error.message).slice(0, 500), nextRetryAt: null }
-        }).setOptions({ bypassTenantFilter: true });
+        }).setOptions({ authorizedSystemOperation: 'INTEGRATION_WORKER' }));
       }
     });
     workers.push(integrationWorker);
 
     const notificationWorker = new Worker(APP_CONFIG.QUEUES.NOTIFICATIONS, async (job: Job) => {
       const deliveryId = String(job.data.deliveryId || '');
-      const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/notifications/deliveries/${encodeURIComponent(deliveryId)}/process`, { method: 'POST', headers: { 'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET } });
+      const tenantId = String(job.data.tenantId || '');
+      const response = await fetch(`${ENV.API_INTERNAL_URL}/api/v1/internal/notifications/deliveries/${encodeURIComponent(deliveryId)}/process`, { method: 'POST', headers: { 'x-internal-worker-secret': ENV.INTERNAL_WORKER_SECRET, 'x-tenant-id': tenantId } });
       if (!response.ok) throw new Error(`Internal notification delivery failed (${response.status})`);
     }, { connection: redis as any, concurrency: 5 });
     workers.push(notificationWorker);
 
     const reconciliationWorker = new Worker(APP_CONFIG.QUEUES.FINANCE_RECONCILIATION, async (job: Job) => {
-      const { kind, id } = job.data as { kind: 'payment' | 'refund'; id: string };
+      const { kind, id, tenantId } = job.data as { kind: 'payment' | 'refund'; id: string; tenantId?: string };
       try {
-        await invokeInternal(`${kind}-reconcile`, id);
-        await releaseReconciliation(kind, id, ENV.FINANCE_RECONCILIATION_INTERVAL_MS);
+        await invokeInternal(`${kind}-reconcile`, id, tenantId);
+        await releaseReconciliation(kind, id, ENV.FINANCE_RECONCILIATION_INTERVAL_MS, undefined, systemAuthority, tenantId);
       } catch (error: any) {
-        if (job.attemptsMade + 1 >= (job.opts.attempts || 1)) await releaseReconciliation(kind, id, ENV.FINANCE_RECONCILIATION_INTERVAL_MS, String(error?.message || error));
+        if (job.attemptsMade + 1 >= (job.opts.attempts || 1)) await releaseReconciliation(kind, id, ENV.FINANCE_RECONCILIATION_INTERVAL_MS, String(error?.message || error), systemAuthority, tenantId);
         throw error;
       }
     }, { connection: redis as any, concurrency: ENV.FINANCE_RECONCILIATION_CONCURRENCY });

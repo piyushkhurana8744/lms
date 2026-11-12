@@ -38,13 +38,20 @@ export default function AdminCommunicationsPage() {
       params.set('page', page.toString());
       params.set('limit', '15');
       const res = await fetch(`/api/v1/communications/announcements?${params.toString()}`);
-      if (!res.ok) throw new Error('Failed to load announcements');
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        const message = payload?.message || payload?.error || `Request failed with status ${res.status}`;
+        throw new Error(message);
+      }
       return res.json();
     }
   });
 
-  const announcements = data?.data?.announcements || [];
-  const pagination = data?.data?.pagination || { total: 0, pages: 1 };
+  const announcements = Array.isArray(data?.data) ? data.data : [];
+  const pagination = {
+    total: data?.pagination?.total ?? 0,
+    pages: data?.pagination?.totalPages ?? 1
+  };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -191,6 +198,23 @@ export default function AdminCommunicationsPage() {
           <div className="p-12 text-center rounded-2xl bg-[var(--bg-surface)] border border-[var(--brand-border)]">
             <div className="w-8 h-8 border-2 border-[#BE1E2E] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
             <p className="text-xs text-[var(--text-muted)]">Loading institutional announcements...</p>
+          </div>
+        ) : isError ? (
+          <div className="p-12 text-center rounded-2xl bg-[var(--bg-surface)] border border-red-500/30 space-y-3">
+            <AlertCircle className="w-12 h-12 text-red-500 mx-auto stroke-1" />
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-[var(--brand-text)]">Unable to load announcements</h3>
+              <p className="text-xs text-[var(--text-muted)] max-w-md mx-auto">
+                {error instanceof Error ? error.message : 'The announcements request failed.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold bg-[#BE1E2E] text-white hover:bg-[#a01825] transition-colors"
+            >
+              Try Again
+            </button>
           </div>
         ) : filteredAnnouncements.length === 0 ? (
           <div className="p-12 text-center rounded-2xl bg-[var(--bg-surface)] border border-[var(--brand-border)] space-y-3">

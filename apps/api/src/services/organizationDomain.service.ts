@@ -295,7 +295,7 @@ export class OrganizationDomainService {
     const customMatch = await OrganizationDomainModel.findOne({
       customDomain: normalized,
       status: { $in: ['VERIFIED', 'ACTIVE'] }
-    }).lean();
+    }).setOptions({ publicReadPolicy: 'DOMAIN_RESOLUTION' }).select('tenantId').lean();
 
     if (customMatch) {
       return customMatch.tenantId.toString();
@@ -304,7 +304,7 @@ export class OrganizationDomainService {
     // 2. Match on platformSubdomain
     const platformMatch = await OrganizationDomainModel.findOne({
       platformSubdomain: normalized
-    }).lean();
+    }).setOptions({ publicReadPolicy: 'DOMAIN_RESOLUTION' }).select('tenantId').lean();
 
     if (platformMatch) {
       return platformMatch.tenantId.toString();

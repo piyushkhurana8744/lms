@@ -218,6 +218,62 @@ router.post(
   IntegrationsController.cancelClassMeeting
 );
 
+// Multi-Trainer Zoom Host Management
+router.get(
+  '/zoom/trainers',
+  requireAnyPermission([
+    PERMISSIONS.INTEGRATIONS_MANAGE,
+    PERMISSIONS.INTEGRATIONS_LIVE_CLASSES_MANAGE,
+    PERMISSIONS.SUPERADMIN_ALL
+  ]),
+  IntegrationsController.listTrainerZoomAccounts
+);
+
+router.post(
+  '/zoom/trainers/:userId/verify',
+  requireAnyPermission([
+    PERMISSIONS.INTEGRATIONS_MANAGE,
+    PERMISSIONS.INTEGRATIONS_LIVE_CLASSES_MANAGE,
+    PERMISSIONS.SUPERADMIN_ALL
+  ]),
+  IntegrationsController.mapTrainerZoomAccount
+);
+
+router.post(
+  '/zoom/trainers/sync',
+  requireAnyPermission([
+    PERMISSIONS.INTEGRATIONS_MANAGE,
+    PERMISSIONS.INTEGRATIONS_LIVE_CLASSES_MANAGE,
+    PERMISSIONS.SUPERADMIN_ALL
+  ]),
+  IntegrationsController.syncTrainerZoomAccounts
+);
+
+router.delete(
+  '/zoom/trainers/:userId',
+  requireAnyPermission([
+    PERMISSIONS.INTEGRATIONS_MANAGE,
+    PERMISSIONS.INTEGRATIONS_LIVE_CLASSES_MANAGE,
+    PERMISSIONS.SUPERADMIN_ALL
+  ]),
+  IntegrationsController.deleteTrainerZoomAccount
+);
+
+router.post(
+  '/classes/:classId/reassign-trainer',
+  requireAnyPermission([
+    PERMISSIONS.CLASS_UPDATE,
+    PERMISSIONS.INTEGRATIONS_LIVE_CLASSES_MANAGE,
+    PERMISSIONS.SUPERADMIN_ALL
+  ]),
+  IntegrationsController.reassignTrainerForClassMeeting
+);
+
+router.get(
+  '/zoom/my-account',
+  IntegrationsController.getMyTrainerZoomAccount
+);
+
 // Unified Student/Instructor Join Endpoint
 router.get(
   '/classes/:classId/join',

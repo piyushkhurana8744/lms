@@ -167,7 +167,7 @@ export class CommunicationMessageService {
       });
 
       try {
-        await NotificationIntentModel.collection.insertMany(intents, { ordered: false });
+        await NotificationIntentModel.insertMany(intents, { ordered: false });
       } catch (err: any) {
         if (err.code !== 11000) throw err;
       }

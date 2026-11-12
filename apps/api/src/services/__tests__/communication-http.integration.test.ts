@@ -19,7 +19,7 @@ import {
   disconnectDatabase
 } from '@edtech/database';
 import { PERMISSIONS } from '@edtech/permissions';
-import { signAccessToken } from '@edtech/utils';
+import { signAccessToken, tenantContextStorage } from '@edtech/utils';
 import { createApp } from '../../app';
 
 const suite = process.env.RUN_MONGO_INTEGRATION === '1' ? describe : describe.skip;
@@ -151,71 +151,81 @@ suite('Phase 20 Institutional Communication System HTTP RBAC & Security Integrat
       }
     ]);
 
-    // 4. Users
-    const users = [
-      { _id: hqAdminId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'hq@didm.edu', name: 'HQ Admin', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: branchAManagerId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'bm-a@didm.edu', name: 'Branch A Manager', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: instructor1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'inst1@didm.edu', name: 'Instructor 1', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: student1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'stud1@didm.edu', name: 'Student 1', passwordHash: 'hash123', status: 'ACTIVE' },
-      { _id: suspendedUserId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'susp@didm.edu', name: 'Suspended User', passwordHash: 'hash123', status: 'SUSPENDED' },
-      { _id: tenantBAdminId, tenantId: tenantBId, allowedTenantIds: [tenantBId], email: 'admin@foreign.edu', name: 'Tenant B Admin', passwordHash: 'hash123', status: 'ACTIVE' }
-    ];
-    await UserModel.create(users);
+    // 4. Users & Members under respective tenant contexts
+    await tenantContextStorage.run(
+      { currentTenantId: tenantAId.toString(), currentUserId: hqAdminId.toString(), isPlatformContext: false, allowedTenantIds: [tenantAId.toString()] },
+      async () => {
+        const usersA = [
+          { _id: hqAdminId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'hq@didm.edu', name: 'HQ Admin', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: branchAManagerId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'bm-a@didm.edu', name: 'Branch A Manager', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: instructor1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'inst1@didm.edu', name: 'Instructor 1', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: student1Id, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'stud1@didm.edu', name: 'Student 1', passwordHash: 'hash123', status: 'ACTIVE' },
+          { _id: suspendedUserId, tenantId: tenantAId, allowedTenantIds: [tenantAId], email: 'susp@didm.edu', name: 'Suspended User', passwordHash: 'hash123', status: 'SUSPENDED' }
+        ];
+        await UserModel.create(usersA);
 
-    // 5. Org Members
-    await OrganizationMemberModel.create([
-      { tenantId: tenantAId, userId: hqAdminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: branchAManagerId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: instructor1Id, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: student1Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
-      { tenantId: tenantAId, userId: suspendedUserId, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'SUSPENDED' },
-      { tenantId: tenantBId, userId: tenantBAdminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' }
-    ]);
+        await OrganizationMemberModel.create([
+          { tenantId: tenantAId, userId: hqAdminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: branchAManagerId, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: instructor1Id, role: 'INSTRUCTOR', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: student1Id, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'ACTIVE' },
+          { tenantId: tenantAId, userId: suspendedUserId, role: 'STUDENT', branchAccessMode: 'SELECTED', branchIds: [branchAId], status: 'SUSPENDED' }
+        ]);
 
-    // 6. Student Lifecycle & Academic Enrollment
-    const course = await CourseModel.create({
-      tenantId: tenantAId,
-      title: 'HTTP Test Course',
-      slug: `http-course-${Date.now()}`,
-      status: 'PUBLISHED'
-    });
+        // 6. Student Lifecycle & Academic Enrollment
+        const course = await CourseModel.create({
+          tenantId: tenantAId,
+          title: 'HTTP Test Course',
+          slug: `http-course-${Date.now()}`,
+          status: 'PUBLISHED'
+        });
 
-    const batch = await BatchModel.create({
-      tenantId: tenantAId,
-      branchId: branchAId,
-      courseId: course._id,
-      name: 'Batch HTTP 101',
-      batchCode: `BH-${Date.now()}`,
-      instructorId: instructor1Id,
-      mode: 'OFFLINE',
-      status: 'ONGOING',
-      maxSeats: 50,
-      enrolledCount: 1,
-      timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
-      daysOfWeek: ['MONDAY', 'WEDNESDAY', 'FRIDAY'],
-      startDate: new Date()
-    });
+        const batch = await BatchModel.create({
+          tenantId: tenantAId,
+          branchId: branchAId,
+          courseId: course._id,
+          name: 'Batch HTTP 101',
+          batchCode: `BH-${Date.now()}`,
+          instructorId: instructor1Id,
+          mode: 'OFFLINE',
+          status: 'ONGOING',
+          maxSeats: 50,
+          enrolledCount: 1,
+          timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
+          daysOfWeek: ['MONDAY', 'WEDNESDAY', 'FRIDAY'],
+          startDate: new Date()
+        });
 
-    const enrollment = await EnrollmentModel.create({
-      tenantId: tenantAId,
-      studentId: student1Id,
-      courseId: course._id,
-      status: 'ACTIVE',
-      enrolledAt: new Date(),
-      progressPercent: 0
-    });
+        const enrollment = await EnrollmentModel.create({
+          tenantId: tenantAId,
+          studentId: student1Id,
+          courseId: course._id,
+          status: 'ACTIVE',
+          enrolledAt: new Date(),
+          progressPercent: 0
+        });
 
-    await StudentLifecycleModel.create({
-      tenantId: tenantAId,
-      studentUserId: student1Id,
-      currentEnrollmentId: enrollment._id,
-      currentBranchId: branchAId,
-      currentBatchId: batch._id,
-      currentStatus: 'ACTIVE',
-      lifecycleEpisode: 1,
-      isTerminal: false,
-      revision: 0
-    });
+        await StudentLifecycleModel.create({
+          tenantId: tenantAId,
+          studentUserId: student1Id,
+          currentEnrollmentId: enrollment._id,
+          currentBranchId: branchAId,
+          currentBatchId: batch._id,
+          currentStatus: 'ACTIVE',
+          lifecycleEpisode: 1,
+          isTerminal: false,
+          revision: 0
+        });
+      }
+    );
+
+    await tenantContextStorage.run(
+      { currentTenantId: tenantBId.toString(), currentUserId: tenantBAdminId.toString(), isPlatformContext: false, allowedTenantIds: [tenantBId.toString()] },
+      async () => {
+        await UserModel.create({ _id: tenantBAdminId, tenantId: tenantBId, allowedTenantIds: [tenantBId], email: 'admin@foreign.edu', name: 'Tenant B Admin', passwordHash: 'hash123', status: 'ACTIVE' });
+        await OrganizationMemberModel.create({ tenantId: tenantBId, userId: tenantBAdminId, role: 'TENANT_ADMIN', branchAccessMode: 'ALL', status: 'ACTIVE' });
+      }
+    );
 
     // 7. Tokens
     const sign = async (uid: mongoose.Types.ObjectId, tid: mongoose.Types.ObjectId) => {

@@ -41,6 +41,7 @@ const PublicSiteContext = createContext<PublicSiteContextValue>({
 });
 
 const HEX_COLOR_REGEX = /^#([0-9A-F]{3}){1,2}$/i;
+const WEBSITE_NOT_FOUND_RESULT = { kind: 'WEBSITE_NOT_FOUND' } as const;
 const DEFAULT_ORGANIZATION: PublicOrganizationInfo = {
   name: 'DIDM Academy',
   supportEmail: 'support@didm.edu',
@@ -70,21 +71,34 @@ export function PublicSiteProvider({ children }: { children: React.ReactNode }) 
   const { data, isLoading, error, isError } = useQuery({
     queryKey: ['public-site-runtime'],
     queryFn: async () => {
-      const res = await fetch('/api/v1/public/site');
+      const res = await fetch('/api/v1/public/site', {
+        headers: { Accept: 'application/json' }
+      });
       if (res.status === 404) {
-        throw new Error('WEBSITE_NOT_FOUND');
+        // An unmapped host is an expected public-site state, not a failed
+        // query. Throwing here makes React Query report an unhandled-looking
+        // error in the browser even though we render a dedicated 404 screen.
+        return WEBSITE_NOT_FOUND_RESULT;
       }
       if (!res.ok) {
-        throw new Error(`Failed to load site context (${res.status})`);
+        // Site configuration is an enhancement; a temporary API failure should
+        // not replace the whole public website with a framework error overlay.
+        // Returning null below activates the safe default organization config.
+        return null;
       }
-      return res.json();
+
+      try {
+        return await res.json();
+      } catch {
+        return null;
+      }
     },
     staleTime: 1000 * 60 * 5,
     retry: false
   });
 
-  const isNotFound = isError && error instanceof Error && error.message === 'WEBSITE_NOT_FOUND';
-  const siteData = data?.data || null;
+  const isNotFound = data?.kind === WEBSITE_NOT_FOUND_RESULT.kind;
+  const siteData = !isNotFound && data && 'data' in data ? data.data : null;
   const organization: PublicOrganizationInfo = React.useMemo(() => {
     if (!siteData?.organization && !siteData?.branding) return DEFAULT_ORGANIZATION;
     return {

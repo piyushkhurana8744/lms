@@ -65,8 +65,11 @@ export function verifyRefreshToken(
 let NodeAsyncLocalStorage: any;
 if (typeof window === 'undefined') {
   try {
+    // Node 20+ exposes built-ins synchronously even when this package is
+    // evaluated as ESM (where `require` is unavailable, as in Vitest).
+    const builtin = (globalThis as any).process?.getBuiltinModule?.('async_hooks');
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    NodeAsyncLocalStorage = require('async_hooks').AsyncLocalStorage;
+    NodeAsyncLocalStorage = builtin?.AsyncLocalStorage || (typeof require === 'function' ? require('async_hooks').AsyncLocalStorage : undefined);
   } catch {
     // Fallback if environment lacks async_hooks
   }
@@ -81,9 +84,14 @@ class DummyAsyncLocalStorage<T> {
   }
 }
 
-export const tenantContextStorage = NodeAsyncLocalStorage
-  ? new NodeAsyncLocalStorage()
-  : new DummyAsyncLocalStorage<IWorkspaceContext>();
+// Source and built workspace packages can coexist in test/dev module graphs.
+// A process-global symbol prevents those copies from creating split contexts.
+const tenantContextStorageKey = Symbol.for('didm.tenantContextStorage');
+const contextGlobal = globalThis as any;
+export const tenantContextStorage = contextGlobal[tenantContextStorageKey] ||
+  (contextGlobal[tenantContextStorageKey] = NodeAsyncLocalStorage
+    ? new NodeAsyncLocalStorage()
+    : new DummyAsyncLocalStorage<IWorkspaceContext>());
 
 export function getWorkspaceContext(): IWorkspaceContext {
   const store = tenantContextStorage.getStore();
@@ -465,4 +473,115 @@ export function formatTimeOnly(
     minute: '2-digit',
     hour12: true
   }).format(d);
+}
+
+/**
+ * Strict Same-Origin Safe Redirect Validator
+ * Rejects:
+ * - External URLs (e.g. https://evil.com, http://evil.com)
+ * - Protocol-relative URLs (e.g. //evil.com, /\\evil.com, \\evil.com)
+ * - Control characters, newlines, and null bytes (%00, \r, \n)
+ * - Non-HTTP schemes (javascript:, data:, vbscript:, file:)
+ * - Backslashes (normalized to slashes in some browsers)
+ * - Nested / encoded bypasses (e.g. %2f%2fevil.com, %252f)
+ */
+export function sanitizeReturnUrl(rawUrl: unknown, fallback = '/platform'): string {
+  if (typeof rawUrl !== 'string' || !rawUrl.trim()) {
+    return fallback;
+  }
+
+  const trimmed = rawUrl.trim();
+
+  // Reject immediate red flags: protocol-relative, backslash, control chars
+  if (
+    trimmed.startsWith('//') ||
+    trimmed.startsWith('\\\\') ||
+    trimmed.includes('\\') ||
+    /[\x00-\x1F\x7F]/.test(trimmed)
+  ) {
+    return fallback;
+  }
+
+  // Iteratively decode to detect nested encoding bypasses (max 3 rounds)
+  let decoded = trimmed;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      return fallback;
+    }
+  }
+
+  // Check again after decoding
+  if (
+    decoded.startsWith('//') ||
+    decoded.startsWith('\\\\') ||
+    decoded.includes('\\') ||
+    /[\x00-\x1F\x7F]/.test(decoded)
+  ) {
+    return fallback;
+  }
+
+  // Reject schemes like javascript:, data:, vbscript:, http:, https:, file:
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(decoded) || /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(trimmed)) {
+    return fallback;
+  }
+
+  // Must start with exactly one '/'
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//')) {
+    return fallback;
+  }
+
+  try {
+    const parsed = new URL(trimmed, 'http://localhost');
+    if (parsed.origin !== 'http://localhost') {
+      return fallback;
+    }
+    const sanitized = parsed.pathname + parsed.search;
+    if (!sanitized.startsWith('/') || sanitized.startsWith('//')) {
+      return fallback;
+    }
+    return sanitized;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Validates and authorizes the return destination for a specific operator.
+ * Prevents privilege escalation or redirection to unauthorized dashboards.
+ */
+export function getAuthorizedReturnUrl(
+  user: { isSuperAdmin?: boolean; roles?: string[] } | null | undefined,
+  returnUrl?: string | null,
+  fallback?: string
+): string {
+  const isSuperAdmin = Boolean(user?.isSuperAdmin);
+  const defaultFallback = fallback || (isSuperAdmin ? '/platform' : '/admin');
+  const safeUrl = sanitizeReturnUrl(returnUrl, defaultFallback);
+
+  const pathname = safeUrl.split('?')[0];
+
+  // /platform strictly requires SuperAdmin
+  if (pathname.startsWith('/platform')) {
+    if (!isSuperAdmin) {
+      return '/admin';
+    }
+    return safeUrl;
+  }
+
+  // /admin requires SuperAdmin or ADMIN/TENANT_ADMIN/BRANCH_MANAGER
+  if (pathname.startsWith('/admin')) {
+    if (
+      !isSuperAdmin &&
+      !user?.roles?.some((r) => ['ADMIN', 'TENANT_ADMIN', 'BRANCH_MANAGER'].includes(r.toUpperCase()))
+    ) {
+      return defaultFallback;
+    }
+    return safeUrl;
+  }
+
+  return safeUrl;
 }

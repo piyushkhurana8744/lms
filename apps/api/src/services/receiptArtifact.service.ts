@@ -1,5 +1,5 @@
-import { OrganizationStorageModel, PaymentModel, ReceiptModel } from '@edtech/database';
-import { formatCurrency, tenantContextStorage } from '@edtech/utils';
+import { OrganizationStorageModel, PaymentModel, ReceiptModel, runAuthorizedSystemOperation, SystemAuthority } from '@edtech/database';
+import { formatCurrency, tenantContextStorage, tryGetWorkspaceContext } from '@edtech/utils';
 import { ConflictError, NotFoundError } from '../errors/appError';
 import { StorageProviderFactory } from './storage/storageProviderFactory';
 import { financeCheckpoint } from './financeFailureInjection';
@@ -28,11 +28,19 @@ export function renderReceiptPdf(lines: string[]): Buffer {
 }
 
 export class ReceiptArtifactService {
-  static async generateTrusted(receiptId: string) {
-    const receipt = await ReceiptModel.findById(receiptId).setOptions({ bypassTenantFilter: true }).select('tenantId');
-    if (!receipt) throw new NotFoundError('Receipt not found');
-    const tenantId = receipt.tenantId.toString();
-    return tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: 'finance-worker', isPlatformContext: false, allowedTenantIds: [tenantId] }, () => this.generate(receiptId));
+  static async generateTrusted(receiptId: string, authority?: SystemAuthority, expectedTenantId?: string) {
+    if (!authority) {
+      const workspaceTenant = tryGetWorkspaceContext()?.currentTenantId;
+      if (!workspaceTenant) throw new Error('Tenant context or authorized system capability required');
+      return this.generate(receiptId);
+    }
+    const binding = await runAuthorizedSystemOperation(authority, { kind: 'ARTIFACT_HANDOFF', reason: 'Resolve receipt artifact tenant', correlationId: receiptId }, () =>
+      ReceiptModel.findById(receiptId).setOptions({ authorizedSystemOperation: 'ARTIFACT_HANDOFF' }).select('_id tenantId').lean()
+    );
+    if (!binding?.tenantId) throw new NotFoundError('Receipt not found');
+    const tenantId = binding.tenantId.toString();
+    if (expectedTenantId && expectedTenantId !== tenantId) throw new Error('Receipt tenant binding rejected');
+    return tenantContextStorage.run({ currentTenantId: tenantId, currentUserId: authority.principal, isPlatformContext: false, allowedTenantIds: [tenantId] }, () => this.generate(receiptId));
   }
 
   static async generate(receiptId: string) {

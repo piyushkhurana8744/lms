@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AuthService } from '../auth.service';
-import { UserModel, SessionModel, TenantModel } from '@edtech/database';
+import { authorizePlatformSession, UserModel, SessionModel, TenantModel } from '@edtech/database';
 import { AuditService } from '../audit.service';
 import { UnauthorizedError, NotFoundError, BadRequestError } from '../../errors/appError';
 import mongoose from 'mongoose';
@@ -9,6 +9,7 @@ vi.mock('@edtech/database', () => {
   const mockUserFindById = vi.fn();
   const mockSessionFindById = vi.fn();
   const mockSessionCreate = vi.fn();
+  const mockSessionFindOneAndUpdate = vi.fn();
 
   return {
     UserModel: {
@@ -16,12 +17,16 @@ vi.mock('@edtech/database', () => {
     },
     SessionModel: {
       findById: mockSessionFindById,
+      findOneAndUpdate: mockSessionFindOneAndUpdate,
       create: mockSessionCreate
     },
     TenantModel: {
       findById: vi.fn()
     },
-    getDatabaseState: vi.fn().mockReturnValue('CONNECTED')
+    getDatabaseState: vi.fn().mockReturnValue('CONNECTED'),
+    runInTransaction: vi.fn(async (operation: any) => operation(undefined)),
+    authorizePlatformSession: vi.fn(async ({ actorId, sessionId, reason, correlationId }: any) => ({ actorId, sessionId, reason, correlationId })),
+    runAuthorizedPlatformOperation: vi.fn(async (_auth: any, _params: any, op: any) => op())
   };
 });
 
@@ -35,6 +40,7 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
   const superAdminId = new mongoose.Types.ObjectId().toString();
   const targetUserId = new mongoose.Types.ObjectId().toString();
   const targetTenantId = new mongoose.Types.ObjectId().toString();
+  const verifiedSessionId = new mongoose.Types.ObjectId().toString();
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -62,10 +68,7 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
 
   it('3. should reject nested impersonation when caller session is already impersonating', async () => {
     const originalSessionId = new mongoose.Types.ObjectId().toString();
-    (SessionModel.findById as any).mockResolvedValueOnce({
-      _id: originalSessionId,
-      impersonatedBy: new mongoose.Types.ObjectId()
-    });
+    (authorizePlatformSession as any).mockRejectedValueOnce(new Error('Impersonated sessions cannot issue platform authority'));
 
     await expect(
       AuthService.impersonateUser({
@@ -74,7 +77,7 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
         reason: 'Nested test',
         originalSessionId
       })
-    ).rejects.toThrow(BadRequestError);
+    ).rejects.toThrow(UnauthorizedError);
   });
 
   it('4. should reject impersonation if actor is not a platform superadmin', async () => {
@@ -88,7 +91,8 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
       AuthService.impersonateUser({
         targetUserId,
         superAdminUserId: superAdminId,
-        reason: 'Testing unauthorized attempt'
+        reason: 'Testing unauthorized attempt',
+        originalSessionId: verifiedSessionId
       })
     ).rejects.toThrow(UnauthorizedError);
   });
@@ -108,7 +112,8 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
       AuthService.impersonateUser({
         targetUserId,
         superAdminUserId: superAdminId,
-        reason: 'Target user not found test'
+        reason: 'Target user not found test',
+        originalSessionId: verifiedSessionId
       })
     ).rejects.toThrow(NotFoundError);
   });
@@ -136,7 +141,8 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
       AuthService.impersonateUser({
         targetUserId,
         superAdminUserId: superAdminId,
-        reason: 'Attempting to impersonate peer superadmin'
+        reason: 'Attempting to impersonate peer superadmin',
+        originalSessionId: verifiedSessionId
       })
     ).rejects.toThrow(BadRequestError);
   });
@@ -164,7 +170,8 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
       AuthService.impersonateUser({
         targetUserId,
         superAdminUserId: superAdminId,
-        reason: 'Attempting to impersonate suspended user'
+        reason: 'Attempting to impersonate suspended user',
+        originalSessionId: verifiedSessionId
       })
     ).rejects.toThrow(BadRequestError);
   });
@@ -195,17 +202,18 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
         populate: vi.fn().mockResolvedValue(mockTargetUser)
       });
 
-    (SessionModel.create as any).mockResolvedValue({
+    (SessionModel.create as any).mockResolvedValue([{
       _id: new mongoose.Types.ObjectId(),
       userId: targetUserId,
       impersonatedBy: superAdminId,
       impersonationReason: 'Customer support ticket #402'
-    });
+    }]);
 
     const result = await AuthService.impersonateUser({
       targetUserId,
       superAdminUserId: superAdminId,
       reason: 'Customer support ticket #402',
+      originalSessionId: verifiedSessionId,
       ipAddress: '127.0.0.1',
       userAgent: 'Jest'
     });
@@ -249,10 +257,11 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
     (UserModel.findById as any).mockReturnValue({
       populate: vi.fn().mockResolvedValue(mockSuperAdmin)
     });
-    (SessionModel.create as any).mockResolvedValue({
+    (SessionModel.findOneAndUpdate as any).mockResolvedValue({ ...mockImpersonatedSession, revokedAt: new Date() });
+    (SessionModel.create as any).mockResolvedValue([{
       _id: new mongoose.Types.ObjectId(),
       userId: superAdminId
-    });
+    }]);
 
     const result = await AuthService.exitImpersonation({
       currentSessionId: 'session-123'
@@ -260,7 +269,11 @@ describe('SuperAdmin Impersonation ("Secret Login") Engine Test Suite', () => {
 
     expect(result.user.isSuperAdmin).toBe(true);
     expect(result.user.email).toBe('superadmin@didm.in');
-    expect(mockImpersonatedSession.revokedAt).toBeDefined();
+    expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ _id: 'session-123', revokedAt: null }),
+      expect.objectContaining({ $set: expect.objectContaining({ revokedAt: expect.any(Date) }) }),
+      expect.objectContaining({ new: true })
+    );
     expect(AuditService.logEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         action: 'SUPERADMIN_IMPERSONATION_ENDED',

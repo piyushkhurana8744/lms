@@ -30,7 +30,8 @@ import {
   ShieldAlert,
   Video,
   Calendar,
-  Clock
+  Clock,
+  KeyRound
 } from 'lucide-react';
 
 export default function AdminDashboardPage() {
@@ -109,6 +110,15 @@ export default function AdminDashboardPage() {
         </div>
 
         <div className="flex items-center gap-3 flex-wrap">
+          {user?.isSuperAdmin && (
+            <Link
+              href="/platform?tab=users&returnTo=/admin"
+              className="px-4 py-2.5 text-xs font-bold bg-gradient-to-r from-amber-500 via-[#BE1E2E] to-purple-600 text-white rounded-xl transition-all shadow-lg shadow-red-500/20 hover:opacity-95 flex items-center gap-1.5"
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              <span>Login as Trainer</span>
+            </Link>
+          )}
           <a
             href={publicSiteUrl}
             target="_blank"

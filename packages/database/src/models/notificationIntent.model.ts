@@ -1,4 +1,5 @@
 import { Document, Schema, Types, model } from 'mongoose';
+import { tenantIsolationPlugin } from '../plugin/tenantIsolationPlugin';
 
 export type NotificationIntentType =
   | 'payment.success'
@@ -84,5 +85,6 @@ const schema = new Schema<INotificationIntentDocument>(
 
 schema.index({ eventId: 1 }, { unique: true });
 schema.index({ status: 1, availableAt: 1, leaseUntil: 1 });
+schema.plugin(tenantIsolationPlugin);
 
 export const NotificationIntentModel = model<INotificationIntentDocument>('NotificationIntent', schema);

@@ -7,6 +7,7 @@ export interface ISessionDocument extends Document {
   impersonatedBy?: Types.ObjectId | null;
   originalSessionId?: Types.ObjectId | null;
   impersonationReason?: string | null;
+  impersonationReturnTo?: string | null;
   currentRefreshTokenHash: string;
   previousRefreshTokenHash?: string;
   tokenVersion: number;
@@ -28,6 +29,7 @@ const SessionSchema = new Schema<ISessionDocument>(
     impersonatedBy: { type: Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     originalSessionId: { type: Schema.Types.ObjectId, ref: 'Session', default: null },
     impersonationReason: { type: String, default: null },
+    impersonationReturnTo: { type: String, default: null },
     currentRefreshTokenHash: { type: String, required: true, index: true },
     previousRefreshTokenHash: { type: String, index: true },
     tokenVersion: { type: Number, default: 1 },

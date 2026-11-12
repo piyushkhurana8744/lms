@@ -8,6 +8,7 @@ import {
   IntegrationConnectionModel
 } from '@edtech/database';
 import { LiveClassOrchestratorService } from './integrations/orchestration/liveClassOrchestrator.service';
+import { AcademicTimezoneService } from './academicTimezone.service';
 import {
   CreateClassSchema,
   UpdateClassSchema,
@@ -24,6 +25,33 @@ import { getWorkspaceContext } from '@edtech/utils';
 import { BadRequestError, NotFoundError, ConflictError } from '../errors/appError';
 
 export class ClassService {
+  private static normalizeClock(value: string): string {
+    const normalized = value.trim();
+    if (/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(normalized)) return normalized;
+
+    const twelveHour = normalized.match(/^(\d{1,2}):([0-5]\d)\s*(AM|PM)$/i);
+    if (!twelveHour) throw new BadRequestError('Class time must use a valid HH:mm value');
+    let hours = Number(twelveHour[1]) % 12;
+    if (twelveHour[3].toUpperCase() === 'PM') hours += 12;
+    return `${String(hours).padStart(2, '0')}:${twelveHour[2]}`;
+  }
+
+  private static scheduleInstants(
+    startDate: Date,
+    timing: { startTime: string; endTime: string; timezone?: string }
+  ) {
+    const localDate = startDate.toISOString().slice(0, 10);
+    const timezone = timing.timezone || 'Asia/Kolkata';
+    const startTime = this.normalizeClock(timing.startTime);
+    const endTime = this.normalizeClock(timing.endTime);
+    const scheduledStartAt = AcademicTimezoneService.localToInstant(localDate, startTime, timezone);
+    const scheduledEndAt = AcademicTimezoneService.localToInstant(localDate, endTime, timezone);
+    if (scheduledEndAt <= scheduledStartAt) {
+      throw new BadRequestError('Class end time must be later than start time');
+    }
+    return { scheduledStartAt, scheduledEndAt, timezone, startTime, endTime };
+  }
+
   /**
    * Helper to resolve current tenantId
    */
@@ -135,6 +163,8 @@ export class ClassService {
         tenantId: new Types.ObjectId(tenantId),
         provider: 'ZOOM',
         status: 'CONNECTED',
+        encryptedCredentials: { $nin: ['', null] },
+        'metadata.isDemo': { $ne: true },
         $or: [
           { scopeType: 'TENANT' },
           { scopeType: 'USER', userId: new Types.ObjectId(ctx.currentUserId) }
@@ -161,6 +191,8 @@ export class ClassService {
       }
     }
 
+    const startDate = new Date(payload.startDate);
+    const schedule = this.scheduleInstants(startDate, payload.timing);
     const doc = await ClassModel.create({
       tenantId: new Types.ObjectId(tenantId),
       name: payload.name.trim(),
@@ -172,9 +204,19 @@ export class ClassService {
       enrolledCount: 0,
       enrolledStudents: [],
       status: payload.status || 'SCHEDULED',
-      startDate: new Date(payload.startDate),
+      startDate,
       endDate: payload.endDate ? new Date(payload.endDate) : undefined,
-      timing: payload.timing,
+      timing: {
+        ...payload.timing,
+        startTime: schedule.startTime,
+        endTime: schedule.endTime,
+        timezone: schedule.timezone
+      },
+      scheduledStartAt: schedule.scheduledStartAt,
+      scheduledEndAt: schedule.scheduledEndAt,
+      originalStartAt: schedule.scheduledStartAt,
+      originalEndAt: schedule.scheduledEndAt,
+      timezone: schedule.timezone,
       daysOfWeek: payload.daysOfWeek,
       showOnWebsite: payload.showOnWebsite ?? true,
       zoomDetails: payload.mode === 'ONLINE' || payload.mode === 'HYBRID' ? payload.zoomDetails : undefined,
@@ -386,6 +428,9 @@ export class ClassService {
       }
     }
 
+    const previousScheduledStart = existing.scheduledStartAt?.getTime();
+    const previousScheduledEnd = existing.scheduledEndAt?.getTime();
+
     if (payload.name) existing.name = payload.name.trim();
     if (payload.mode) existing.mode = payload.mode;
     if (payload.status) existing.status = payload.status;
@@ -416,6 +461,20 @@ export class ClassService {
       existing.classroomDetails = payload.classroomDetails;
     }
 
+    const schedule = this.scheduleInstants(existing.startDate, existing.timing);
+    existing.timing.startTime = schedule.startTime;
+    existing.timing.endTime = schedule.endTime;
+    existing.timing.timezone = schedule.timezone;
+    existing.scheduledStartAt = schedule.scheduledStartAt;
+    existing.scheduledEndAt = schedule.scheduledEndAt;
+    existing.originalStartAt ||= schedule.scheduledStartAt;
+    existing.originalEndAt ||= schedule.scheduledEndAt;
+    existing.timezone = schedule.timezone;
+    const scheduleChanged =
+      previousScheduledStart !== schedule.scheduledStartAt.getTime() ||
+      previousScheduledEnd !== schedule.scheduledEndAt.getTime();
+    if (scheduleChanged) existing.scheduleRevision = (existing.scheduleRevision || 0) + 1;
+
     await existing.save();
 
     const shouldProvisionZoom =
@@ -438,6 +497,15 @@ export class ClassService {
         },
         { userId: ctx.currentUserId, roles: ['ADMIN'], isSuperAdmin: true }
       );
+    } else if (scheduleChanged && (existing.mode === 'ONLINE' || existing.mode === 'HYBRID')) {
+      const ctx = getWorkspaceContext();
+      if (ctx?.currentUserId) {
+        await LiveClassOrchestratorService.rescheduleMeetingForClass(
+          tenantId,
+          existing._id.toString(),
+          { userId: ctx.currentUserId, roles: ['ADMIN'], isSuperAdmin: true }
+        );
+      }
     }
 
     const updated = await ClassModel.findById(existing._id)

@@ -28,7 +28,7 @@ declare global {
  */
 export async function publicTenantMiddleware(req: Request, res: Response, next: NextFunction) {
   try {
-    const rawHost = (req.headers.host as string) || (req.headers['x-forwarded-host'] as string) || '';
+    const rawHost = (req.headers.host as string) || '';
     const normalizedHost = PublicTenantService.normalizeHost(rawHost);
 
     const resolved = await PublicTenantService.resolveTenantFromHost(rawHost);

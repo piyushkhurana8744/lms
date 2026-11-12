@@ -47,6 +47,19 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
   let courseAId: Types.ObjectId;
   let adminActor: AudienceActor;
 
+  const inTenant = async <T>(fn: () => Promise<T>): Promise<T> => {
+    return tenantContextStorage.run(
+      {
+        currentTenantId: tenantId.toString(),
+        currentUserId: adminUserId.toString(),
+        isPlatformContext: false,
+        allowedTenantIds: [tenantId.toString()]
+      },
+      async () => await fn()
+    );
+  };
+
+
   const startRedisDaemon = async (): Promise<void> => {
     if (redisProcess) return;
     redisProcess = spawn('/opt/homebrew/bin/redis-server', [
@@ -96,78 +109,80 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
       slug: `p20-failure-${Date.now()}`
     });
     tenantId = tenant._id;
-
-    // 2. Create Branches
-    const [bA, bB, bC] = await Promise.all([
-      BranchModel.create({ tenantId, name: 'Connaught Place HQ', slug: `cp-hq-${Date.now()}`, code: 'CP-HQ', isPrimary: true, status: 'ACTIVE' }),
-      BranchModel.create({ tenantId, name: 'Noida Hub', slug: `noida-${Date.now()}`, code: 'NOIDA', isPrimary: false, status: 'ACTIVE' }),
-      BranchModel.create({ tenantId, name: 'South Delhi Hub', slug: `sd-hub-${Date.now()}`, code: 'SD-HUB', isPrimary: false, status: 'ACTIVE' })
-    ]);
-    branchAId = bA._id;
-    branchBId = bB._id;
-    branchCId = bC._id;
-
-    // 3. Create Admin & Instructor
     adminUserId = new Types.ObjectId();
     instructorUserId = new Types.ObjectId();
-
-    await UserModel.collection.insertMany([
-      { _id: adminUserId, tenantId, allowedTenantIds: [tenantId], name: 'Comms Director', email: 'director@p20-failure.test', passwordHash: 'hash', status: 'ACTIVE' },
-      { _id: instructorUserId, tenantId, allowedTenantIds: [tenantId], name: 'Lead Instructor', email: 'instructor@p20-failure.test', passwordHash: 'hash', status: 'ACTIVE' }
-    ]);
-
-    await OrganizationMemberModel.collection.insertMany([
-      { tenantId, userId: adminUserId, role: 'TENANT_ADMIN', status: 'ACTIVE', branchAccessMode: 'ALL', joinedAt: new Date() },
-      { tenantId, userId: instructorUserId, role: 'INSTRUCTOR', status: 'ACTIVE', branchAccessMode: 'SELECTED', assignedBranchIds: [branchAId], primaryBranchId: branchAId, joinedAt: new Date() }
-    ]);
-
     adminActor = {
       userId: adminUserId.toString(),
       roles: ['TENANT_ADMIN'],
       isSuperAdmin: true
     };
 
-    // 4. Create Course & Batches
-    const course = await CourseModel.create({
-      tenantId,
-      title: 'Digital Systems Engineering',
-      slug: `digital-systems-${Date.now()}`,
-      status: 'PUBLISHED'
-    });
-    courseAId = course._id;
+    // 2. Create Branches, Users, Members, Course & Batches under tenant context
+    await tenantContextStorage.run(
+      { currentTenantId: tenantId.toString(), currentUserId: adminUserId.toString(), isPlatformContext: false, allowedTenantIds: [tenantId.toString()] },
+      async () => {
+        const [bA, bB, bC] = await Promise.all([
+          BranchModel.create({ tenantId, name: 'Connaught Place HQ', slug: `cp-hq-${Date.now()}`, code: 'CP-HQ', isPrimary: true, status: 'ACTIVE' }),
+          BranchModel.create({ tenantId, name: 'Noida Hub', slug: `noida-${Date.now()}`, code: 'NOIDA', isPrimary: false, status: 'ACTIVE' }),
+          BranchModel.create({ tenantId, name: 'South Delhi Hub', slug: `sd-hub-${Date.now()}`, code: 'SD-HUB', isPrimary: false, status: 'ACTIVE' })
+        ]);
+        branchAId = bA._id;
+        branchBId = bB._id;
+        branchCId = bC._id;
 
-    const [batchA, batchB] = await Promise.all([
-      BatchModel.create({
-        tenantId,
-        courseId: courseAId,
-        branchId: branchAId,
-        name: 'Batch DSE-A',
-        batchCode: 'DSE-A1',
-        mode: 'OFFLINE',
-        status: 'ONGOING',
-        startDate: new Date(),
-        maxSeats: 500,
-        enrolledCount: 0,
-        timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
-        daysOfWeek: ['MONDAY', 'WEDNESDAY', 'FRIDAY']
-      }),
-      BatchModel.create({
-        tenantId,
-        courseId: courseAId,
-        branchId: branchBId,
-        name: 'Batch DSE-B',
-        batchCode: 'DSE-B1',
-        mode: 'OFFLINE',
-        status: 'ONGOING',
-        startDate: new Date(),
-        maxSeats: 500,
-        enrolledCount: 0,
-        timing: { startTime: '14:00', endTime: '16:00', timezone: 'Asia/Kolkata' },
-        daysOfWeek: ['TUESDAY', 'THURSDAY']
-      })
-    ]);
-    batchAId = batchA._id;
-    batchBId = batchB._id;
+        await UserModel.create([
+          { _id: adminUserId, tenantId, allowedTenantIds: [tenantId], name: 'Comms Director', email: 'director@p20-failure.test', passwordHash: 'hash', status: 'ACTIVE' },
+          { _id: instructorUserId, tenantId, allowedTenantIds: [tenantId], name: 'Lead Instructor', email: 'instructor@p20-failure.test', passwordHash: 'hash', status: 'ACTIVE' }
+        ]);
+
+        await OrganizationMemberModel.create([
+          { tenantId, userId: adminUserId, role: 'TENANT_ADMIN', status: 'ACTIVE', branchAccessMode: 'ALL', joinedAt: new Date() },
+          { tenantId, userId: instructorUserId, role: 'INSTRUCTOR', status: 'ACTIVE', branchAccessMode: 'SELECTED', assignedBranchIds: [branchAId], primaryBranchId: branchAId, joinedAt: new Date() }
+        ]);
+
+        // 4. Create Course & Batches
+        const course = await CourseModel.create({
+          tenantId,
+          title: 'Digital Systems Engineering',
+          slug: `digital-systems-${Date.now()}`,
+          status: 'PUBLISHED'
+        });
+        courseAId = course._id;
+
+        const [batchA, batchB] = await Promise.all([
+          BatchModel.create({
+            tenantId,
+            courseId: courseAId,
+            branchId: branchAId,
+            name: 'Batch DSE-A',
+            batchCode: 'DSE-A1',
+            mode: 'OFFLINE',
+            status: 'ONGOING',
+            startDate: new Date(),
+            maxSeats: 500,
+            enrolledCount: 0,
+            timing: { startTime: '10:00', endTime: '12:00', timezone: 'Asia/Kolkata' },
+            daysOfWeek: ['MONDAY', 'WEDNESDAY', 'FRIDAY']
+          }),
+          BatchModel.create({
+            tenantId,
+            courseId: courseAId,
+            branchId: branchBId,
+            name: 'Batch DSE-B',
+            batchCode: 'DSE-B1',
+            mode: 'OFFLINE',
+            status: 'ONGOING',
+            startDate: new Date(),
+            maxSeats: 500,
+            enrolledCount: 0,
+            timing: { startTime: '14:00', endTime: '16:00', timezone: 'Asia/Kolkata' },
+            daysOfWeek: ['TUESDAY', 'THURSDAY']
+          })
+        ]);
+        batchAId = batchA._id;
+        batchBId = batchB._id;
+      }
+    );
   });
 
   afterAll(async () => {
@@ -179,7 +194,7 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
   // =========================================================================
   // 1. REAL REDIS OUTAGE: PUBLISH & NOTIFICATION HANDOFF
   // =========================================================================
-  it('Scenario A: Publishes announcement during real Redis outage; persists durable MongoDB intent, resumes on recovery without duplicates', async () => {
+  it('Scenario A: Publishes announcement during real Redis outage; persists durable MongoDB intent, resumes on recovery without duplicates', () => inTenant(async () => {
     // Start Redis
     await startRedisDaemon();
 
@@ -275,12 +290,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
 
     const recipientSet = new Set(finalIntents.map((i) => i.recipientUserId.toString()));
     expect(recipientSet.size).toBe(3);
-  });
+  }));
 
   // =========================================================================
   // 2. SCHEDULED ANNOUNCEMENT + REDIS OUTAGE
   // =========================================================================
-  it('Scenario B: Scheduled announcement during Redis outage remains durable; publishes exactly once on recovery', async () => {
+  it('Scenario B: Scheduled announcement during Redis outage remains durable; publishes exactly once on recovery', () => inTenant(async () => {
     await startRedisDaemon();
 
     const s1 = new Types.ObjectId();
@@ -333,12 +348,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
     const intents = await NotificationIntentModel.find({ tenantId, sourceId: scheduled.id });
     expect(intents.length).toBe(1);
     expect(intents[0].recipientUserId.toString()).toBe(s1.toString());
-  });
+  }));
 
   // =========================================================================
   // 3. CANCEL DURING OUTAGE (NO LATE DELIVERY)
   // =========================================================================
-  it('Scenario C: Cancelling scheduled announcement during Redis outage prevents any future publication or delivery', async () => {
+  it('Scenario C: Cancelling scheduled announcement during Redis outage prevents any future publication or delivery', () => inTenant(async () => {
     const s1 = new Types.ObjectId();
     await UserModel.create({ _id: s1, tenantId, allowedTenantIds: [tenantId], name: 'Cancel S1', email: 'cancel@p20.test', passwordHash: 'h', status: 'ACTIVE' });
     await StudentLifecycleModel.create({ tenantId, studentUserId: s1, currentEnrollmentId: new Types.ObjectId(), currentStatus: 'ACTIVE', currentBranchId: branchCId, effectiveDate: new Date(), revision: 1, history: [] });
@@ -384,12 +399,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
     // 0 Phase 14 intents generated
     const intents = await NotificationIntentModel.find({ tenantId, sourceId: scheduled.id });
     expect(intents.length).toBe(0);
-  });
+  }));
 
   // =========================================================================
   // 4. WORKER CRASH DURING FANOUT & RECOVERY
   // =========================================================================
-  it('Scenario D: Worker crash / partial execution resumes cleanly with zero duplicate intents and zero missing recipients', async () => {
+  it('Scenario D: Worker crash / partial execution resumes cleanly with zero duplicate intents and zero missing recipients', () => inTenant(async () => {
     const totalRecipients = 50;
     const studentIds: Types.ObjectId[] = [];
     const usersToInsert = [];
@@ -456,12 +471,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
 
     expect(uniqueRecipients.size).toBe(finalIntents.length); // 0 duplicates
     expect(finalIntents.length).toBeGreaterThanOrEqual(totalRecipients); // all covered
-  });
+  }));
 
   // =========================================================================
   // 5. MASS FANOUT: QUANTIFIED PROOF
   // =========================================================================
-  it('Scenario E: Quantified Mass Fanout across 3 branches, batches, courses with multi-selector deduplication (>= 500 recipients)', async () => {
+  it('Scenario E: Quantified Mass Fanout across 3 branches, batches, courses with multi-selector deduplication (>= 500 recipients)', () => inTenant(async () => {
     const numStudents = 520;
     const massStudentIds: Types.ObjectId[] = [];
     const usersBatch = [];
@@ -541,12 +556,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
     // Exact deduplication verification:
     expect(intents.length).toBe(published.audienceSnapshot.recipientCount);
     expect(uniqueIntents.size).toBe(published.audienceSnapshot.recipientCount);
-  });
+  }));
 
   // =========================================================================
   // 6. AUDIENCE CHANGE MID-FANOUT (IMMUTABLE SNAPSHOT VS FUTURE ELIGIBILITY)
   // =========================================================================
-  it('Scenario F: Mid-fanout student transfer preserves immutable historical snapshot; future announcement respects updated eligibility', async () => {
+  it('Scenario F: Mid-fanout student transfer preserves immutable historical snapshot; future announcement respects updated eligibility', () => inTenant(async () => {
     const studentTransferId = new Types.ObjectId();
     const studentNewId = new Types.ObjectId();
 
@@ -634,12 +649,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
     // Prove future snapshot EXCLUDES transferred-out studentTransferId and INCLUDES newly-transferred studentNewId
     expect(futureAnn.audienceSnapshot.recipientUserIds.map((id: any) => id.toString())).not.toContain(studentTransferId.toString());
     expect(futureAnn.audienceSnapshot.recipientUserIds.map((id: any) => id.toString())).toContain(studentNewId.toString());
-  });
+  }));
 
   // =========================================================================
   // 7. PHASE 14 PROVIDER FAILURE
   // =========================================================================
-  it('Scenario G: Phase 14 delivery provider failure does not roll back or corrupt Phase 20 communication state', async () => {
+  it('Scenario G: Phase 14 delivery provider failure does not roll back or corrupt Phase 20 communication state', () => inTenant(async () => {
     const s1 = new Types.ObjectId();
     await UserModel.create({ _id: s1, tenantId, allowedTenantIds: [tenantId], name: 'Provider Fail S1', email: 'fail@p20.test', passwordHash: 'h', status: 'ACTIVE' });
     await StudentLifecycleModel.create({ tenantId, studentUserId: s1, currentEnrollmentId: new Types.ObjectId(), currentStatus: 'ACTIVE', currentBranchId: branchAId, effectiveDate: new Date(), revision: 1, history: [] });
@@ -676,12 +691,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
     const commInDb = await CommunicationAnnouncementModel.findById(published.id);
     expect(commInDb?.status).toBe('PUBLISHED');
     expect(commInDb?.audienceSnapshot?.recipientCount).toBe(1);
-  });
+  }));
 
   // =========================================================================
   // 8. MESSAGE SEND & NOTIFICATION DURING REDIS OUTAGE
   // =========================================================================
-  it('Scenario H: Direct message sending succeeds in Mongo during Redis outage; creates durable intent without sender self-notification', async () => {
+  it('Scenario H: Direct message sending succeeds in Mongo during Redis outage; creates durable intent without sender self-notification', () => inTenant(async () => {
     const student = new Types.ObjectId();
     const instructor = new Types.ObjectId();
 
@@ -731,12 +746,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
     expect(messageIntents.length).toBe(1);
     expect(messageIntents[0].recipientUserId.toString()).toBe(instructor.toString()); // notified recipient
     expect(messageIntents[0].recipientUserId.toString()).not.toBe(student.toString()); // sender not notified
-  });
+  }));
 
   // =========================================================================
   // 9. SOCKET OUTAGE & RECOVERY (DB IS CANONICAL)
   // =========================================================================
-  it('Scenario I: Socket disconnect does not lose messages; fetch via canonical API recovers complete monotonic history', async () => {
+  it('Scenario I: Socket disconnect does not lose messages; fetch via canonical API recovers complete monotonic history', () => inTenant(async () => {
     const student = new Types.ObjectId();
     const instructor = new Types.ObjectId();
 
@@ -773,12 +788,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
       expect(history.data[1].sequenceNumber).toBe(2);
       expect(history.data[2].sequenceNumber).toBe(3);
     });
-  });
+  }));
 
   // =========================================================================
   // 10. STORAGE FAILURE ON ATTACHMENTS
   // =========================================================================
-  it('Scenario J: Storage failure during attachment upload prevents orphan communication references', async () => {
+  it('Scenario J: Storage failure during attachment upload prevents orphan communication references', () => inTenant(async () => {
     // Attempting to send message with invalid attachment hash/size throws validation error and does not commit broken reference
     await tenantContextStorage.run({ currentTenantId: tenantId.toString(), currentUserId: adminUserId.toString() }, async () => {
       await expect(
@@ -805,12 +820,12 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
 
     const brokenInDb = await CommunicationAnnouncementModel.findOne({ title: 'Corrupted File Announcement' });
     expect(brokenInDb).toBeNull();
-  });
+  }));
 
   // =========================================================================
   // 11. QUERY PLANS & EXPLAIN VERIFICATION
   // =========================================================================
-  it('Scenario K: Real MongoDB explain verify high-cardinality IXSCAN indexes', async () => {
+  it('Scenario K: Real MongoDB explain verify high-cardinality IXSCAN indexes', () => inTenant(async () => {
     function hasIndexScan(plan: any): boolean {
       if (!plan) return false;
       if (plan.stage === 'IXSCAN' || plan.stage === 'FETCH') return true;
@@ -860,5 +875,5 @@ suite('Phase 20 Institutional Communication: Real Redis Outage, Mass Fanout & Re
     }).explain('executionStats');
 
     expect(hasIndexScan((schedExplain as any)?.queryPlanner?.winningPlan)).toBe(true);
-  });
+  }));
 });

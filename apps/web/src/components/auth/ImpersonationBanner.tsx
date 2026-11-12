@@ -15,10 +15,10 @@ export function ImpersonationBanner() {
   }
 
   const handleExit = async () => {
+    if (isExiting) return;
     setIsExiting(true);
     try {
       await exitImpersonation();
-      window.location.href = '/platform';
     } catch {
       setIsExiting(false);
     }

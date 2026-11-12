@@ -46,6 +46,7 @@ import {
 import { NotFoundError, BadRequestError, ConflictError, ForbiddenError } from '../errors/appError';
 import { AuditService } from './audit.service';
 import { EnrollmentService } from './enrollment.service';
+import { FinanceService } from './finance.service';
 import { Types } from 'mongoose';
 import { BranchAccessService, BranchActor } from './branchAccess.service';
 import { DomainEventService } from './domainEvent.service';
@@ -869,6 +870,16 @@ export class CRMService {
         : lead.assignedTo,
       status: 'APPLICATION_SUBMITTED',
       applicationDate: new Date(),
+      feeDetails: payload.feeDetails ? {
+        baseAmount: payload.feeDetails.baseAmount,
+        discountAmount: payload.feeDetails.discountAmount || 0,
+        discountReason: payload.feeDetails.discountReason?.trim(),
+        paidAmount: payload.feeDetails.paidAmount || 0,
+        paymentMethod: payload.feeDetails.paymentMethod || 'UPI',
+        transactionReference: payload.feeDetails.transactionReference?.trim(),
+        installmentsCount: payload.feeDetails.installmentsCount || 1,
+        notes: payload.feeDetails.notes?.trim()
+      } : undefined,
       notes: payload.notes?.trim(),
       createdBy: new Types.ObjectId(actorId),
       updatedBy: new Types.ObjectId(actorId)
@@ -879,13 +890,17 @@ export class CRMService {
     lead.stage = 'APPLICATION_STARTED';
     await lead.save();
 
+    const feeSummary = payload.feeDetails?.baseAmount
+      ? ` [Fee: ₹${payload.feeDetails.baseAmount}${payload.feeDetails.paidAmount ? `, Token: ₹${payload.feeDetails.paidAmount} (${payload.feeDetails.paymentMethod || 'UPI'})` : ''}]`
+      : '';
+
     await LeadActivityModel.create({
       tenantId,
       leadId: lead._id,
       type: 'ADMISSION_CREATED',
       title: 'Admission Application Started',
-      note: `Application #${admissionNumber} submitted for ${course.title}`,
-      metadata: { admissionId: admission._id.toString(), courseId: payload.courseId },
+      note: `Application #${admissionNumber} submitted for ${course.title}${feeSummary}`,
+      metadata: { admissionId: admission._id.toString(), courseId: payload.courseId, feeDetails: payload.feeDetails },
       actorId: new Types.ObjectId(actorId)
     });
 
@@ -976,6 +991,7 @@ export class CRMService {
     const enrollmentId = enrollment ? (enrollment._id || (enrollment as any).id) : undefined;
 
     // 3b. Initialize canonical StudentLifecycle aggregate
+    const targetBatchId = payload.batchId || (admission.batchId ? admission.batchId.toString() : undefined);
     if (enrollmentId) {
       await StudentLifecycleService.initializeLifecycle(
         {
@@ -983,12 +999,117 @@ export class CRMService {
           studentUserId: studentUserId.toString(),
           admissionId: admission._id.toString(),
           currentEnrollmentId: enrollmentId.toString(),
-          currentBatchId: payload.batchId || (admission.batchId ? admission.batchId.toString() : undefined),
+          currentBatchId: targetBatchId,
           currentBranchId: admission.branchId ? admission.branchId.toString() : undefined,
           createdBy: actorId
         },
         session
       );
+    }
+
+    // 3c. Update target batch enrolled roster count
+    if (targetBatchId) {
+      await BatchModel.updateOne(
+        { _id: new Types.ObjectId(targetBatchId), tenantId },
+        { $inc: { enrolledCount: 1 } },
+        { session }
+      );
+    }
+
+    // 3d. Credit Sheet & Student Fee Plan Synchronization
+    const feeInfo = payload.feeDetails || admission.feeDetails;
+    let createdFeePlanId: Types.ObjectId | undefined;
+    let initialPaymentId: Types.ObjectId | undefined;
+    let receiptNumber: string | undefined;
+
+    if (feeInfo && feeInfo.baseAmount > 0) {
+      const baseAmountMinor = Math.round(feeInfo.baseAmount * 100);
+      const discountAmountMinor = Math.round((feeInfo.discountAmount || 0) * 100);
+      const netPayableMinor = Math.max(0, baseAmountMinor - discountAmountMinor);
+      const paidAmountMinor = Math.min(netPayableMinor, Math.round((feeInfo.paidAmount || 0) * 100));
+
+      const installmentsCount = Math.max(1, feeInfo.installmentsCount || 1);
+      const installments: any[] = [];
+
+      if (paidAmountMinor > 0) {
+        installments.push({
+          sequence: 1,
+          label: 'Down Payment / Token Fee',
+          dueDate: new Date(),
+          amountMinor: paidAmountMinor
+        });
+      }
+
+      const remainingBalance = netPayableMinor - paidAmountMinor;
+      const remainingInstallmentsCount = paidAmountMinor > 0 ? installmentsCount - 1 : installmentsCount;
+
+      if (remainingBalance > 0 && remainingInstallmentsCount > 0) {
+        const perInstallmentAmount = Math.floor(remainingBalance / remainingInstallmentsCount);
+        const remainder = remainingBalance - (perInstallmentAmount * remainingInstallmentsCount);
+
+        for (let i = 1; i <= remainingInstallmentsCount; i++) {
+          const installmentDueDate = new Date();
+          installmentDueDate.setMonth(installmentDueDate.getMonth() + i);
+
+          const instAmount = perInstallmentAmount + (i === remainingInstallmentsCount ? remainder : 0);
+          installments.push({
+            sequence: installments.length + 1,
+            label: `Installment ${installments.length + 1}`,
+            dueDate: installmentDueDate,
+            amountMinor: instAmount
+          });
+        }
+      } else if (remainingBalance > 0 && installments.length === 0) {
+        installments.push({
+          sequence: 1,
+          label: 'Course Tuition Fee',
+          dueDate: new Date(),
+          amountMinor: remainingBalance
+        });
+      }
+
+      const feePlan = await FinanceService.createStudentFeePlan(
+        {
+          studentUserId: studentUserId.toString(),
+          admissionId: admission._id.toString(),
+          enrollmentId: enrollmentId ? enrollmentId.toString() : undefined,
+          courseId: courseIdStr,
+          batchId: targetBatchId,
+          branchId: admission.branchId ? admission.branchId.toString() : undefined,
+          baseAmountMinor,
+          discountType: discountAmountMinor > 0 ? 'FLAT' : undefined,
+          discountValue: discountAmountMinor > 0 ? discountAmountMinor : undefined,
+          discountReason: feeInfo.discountReason || 'Admission Concession',
+          installments,
+          notes: feeInfo.notes || `Created automatically from CRM Admission #${admission.admissionNumber || admission._id}`
+        },
+        actorId,
+        undefined,
+        session
+      );
+
+      createdFeePlanId = feePlan._id;
+      admission.feePlanId = feePlan._id;
+
+      if (paidAmountMinor > 0) {
+        const paymentResult = await FinanceService.recordManualPayment(
+          {
+            studentFeePlanId: feePlan._id.toString(),
+            amountMinor: paidAmountMinor,
+            method: feeInfo.paymentMethod || 'UPI',
+            transactionReference: feeInfo.transactionReference,
+            notes: `Initial Token/Registration fee via CRM Admission #${admission.admissionNumber || admission._id}`,
+            receivedAt: new Date()
+          },
+          actorId,
+          undefined,
+          session
+        );
+
+        initialPaymentId = paymentResult.payment._id;
+        admission.initialPaymentId = paymentResult.payment._id;
+        receiptNumber = paymentResult.receipt?.receiptNumber;
+      }
     }
 
     // 4. Update Admission status to ADMITTED
@@ -1001,6 +1122,12 @@ export class CRMService {
     }
     if (payload.batchId) {
       admission.batchId = new Types.ObjectId(payload.batchId);
+    }
+    if (createdFeePlanId) {
+      admission.feePlanId = createdFeePlanId;
+    }
+    if (initialPaymentId) {
+      admission.initialPaymentId = initialPaymentId;
     }
     await admission.save({ session });
 
@@ -1015,15 +1142,24 @@ export class CRMService {
     }, { session });
 
     // 6. Record timeline activity
+    const feeActivityNote = receiptNumber
+      ? `. Fee Plan created with Initial Receipt #${receiptNumber} (${feeInfo?.paymentMethod || 'UPI'})`
+      : createdFeePlanId
+        ? '. Fee Plan initialized with scheduled installments'
+        : '';
+
     await LeadActivityModel.create([{
       tenantId,
       leadId: admission.leadId,
       type: 'CONVERTED',
       title: 'Student Admitted & Enrolled',
-      note: `Converted to active student (${applicant.fullName}) and enrolled in ${courseTitle}`,
+      note: `Converted to active student (${applicant.fullName}) and enrolled in ${courseTitle}${feeActivityNote}`,
       metadata: {
         studentUserId: studentUserId.toString(),
-        enrollmentId: admission.enrollmentId?.toString()
+        enrollmentId: admission.enrollmentId?.toString(),
+        feePlanId: createdFeePlanId?.toString(),
+        initialPaymentId: initialPaymentId?.toString(),
+        receiptNumber
       },
       actorId: new Types.ObjectId(actorId)
     }], { session });
@@ -1036,7 +1172,9 @@ export class CRMService {
       resourceId: admission._id.toString(),
       metadata: {
         studentUserId: studentUserId.toString(),
-        courseTitle
+        courseTitle,
+        feePlanId: createdFeePlanId?.toString(),
+        receiptNumber
       },
       session
     });
@@ -1046,6 +1184,9 @@ export class CRMService {
       admissionId: admission._id.toString(),
       studentUserId: studentUserId.toString(),
       enrollmentId: admission.enrollmentId?.toString(),
+      feePlanId: createdFeePlanId?.toString(),
+      initialPaymentId: initialPaymentId?.toString(),
+      receiptNumber,
       courseTitle
     };
     });
