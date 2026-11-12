@@ -1,4 +1,4 @@
-git commit -m "Resolve merge conflicts"import mongoose from 'mongoose';
+import mongoose from 'mongoose';
 import { getTransactionCapabilityOverride } from './transaction';
 export * from './transaction';
 
