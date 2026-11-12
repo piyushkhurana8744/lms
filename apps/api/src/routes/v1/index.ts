@@ -39,6 +39,7 @@ import communicationRouter from './communication.route';
 import automationRouter from './automation.route';
 import aiRouter from './ai.route';
 import integrationsRouter from './integrations.route';
+import crmIntegrationRouter from './crmIntegration.route';
 
 const v1Router: Router = Router();
 
@@ -81,6 +82,7 @@ v1Router.use('/communications', communicationRouter);
 v1Router.use('/automations', automationRouter);
 v1Router.use('/ai', aiRouter);
 v1Router.use('/integrations', integrationsRouter);
+v1Router.use('/crm-integration', crmIntegrationRouter);
 v1Router.use('/', academicSchedulingRouter);
 
 export default v1Router;

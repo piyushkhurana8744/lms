@@ -82,7 +82,6 @@ export * from './models/integrationOAuthState.model';
 export * from './models/liveMeetingAssociationHistory.model';
 export * from './models/attendanceEvidence.model';
 export * from './models/liveClassRecording.model';
-export * from './models/trainerZoomAccount.model';
 
 
 
